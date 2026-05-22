@@ -1,0 +1,13 @@
+version: 2
+ethernets:
+  ens18:
+    match:
+      name: "en*"
+    dhcp4: false
+    dhcp6: false
+    addresses:
+      - 192.168.8.154/24
+    gateway4: 192.168.8.1
+    nameservers:
+      addresses: [192.168.8.252, 192.168.1.252]
+      search: [g8.lo]

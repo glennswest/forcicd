@@ -1,0 +1,15 @@
+.env
+.env.*
+proxmox.env
+secrets/
+*.pem
+*.key
+*.token
+runner-token
+admin-password
+build/
+*.iso
+
+.DS_Store
+.vscode/
+.idea/

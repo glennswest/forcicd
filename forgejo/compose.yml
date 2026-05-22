@@ -1,0 +1,65 @@
+# Forgejo + Actions runner stack for forcicd.g8.lo.
+#
+# Forgejo (the server) and act_runner (Forgejo's GitHub-Actions-
+# compatible job executor) run as separate services on a shared
+# user-defined bridge network so the runner can reach the server
+# at http://forgejo:3000 without touching host networking.
+#
+# The runner needs the Docker socket to launch per-job container
+# environments. That's the standard act_runner pattern and is the
+# reason we use Docker (not Podman) on the host.
+
+services:
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:9
+    container_name: forgejo
+    restart: unless-stopped
+    environment:
+      - USER_UID=1000
+      - USER_GID=1000
+      # Wire the public web URL so generated links / clone URLs
+      # resolve from the LAN.
+      - FORGEJO__server__ROOT_URL=http://forcicd.g8.lo:3000/
+      - FORGEJO__server__DOMAIN=forcicd.g8.lo
+      - FORGEJO__server__SSH_DOMAIN=forcicd.g8.lo
+      - FORGEJO__server__SSH_PORT=22
+      - FORGEJO__server__START_SSH_SERVER=true
+      - FORGEJO__server__BUILTIN_SSH_SERVER_USER=git
+      # Allow GitHub-Actions-style external actions (actions/checkout etc.)
+      - FORGEJO__actions__ENABLED=true
+      - FORGEJO__actions__DEFAULT_ACTIONS_URL=github
+      # Mirror config: allow up to 1-minute pull intervals.
+      - FORGEJO__cron.update_mirrors__SCHEDULE=@every 1m
+      - FORGEJO__mirror__MIN_INTERVAL=1m
+    volumes:
+      - forgejo-data:/data
+      - /etc/timezone:/etc/timezone:ro
+      - /etc/localtime:/etc/localtime:ro
+    ports:
+      # web UI / API
+      - "3000:3000"
+      # git SSH
+      - "2222:22"
+
+  runner:
+    image: code.forgejo.org/forgejo/runner:6
+    container_name: forgejo-runner
+    restart: unless-stopped
+    depends_on:
+      - forgejo
+    environment:
+      - FORGEJO_INSTANCE_URL=http://forgejo:3000
+      # `act_runner register` produces this; pre-seeded by
+      # scripts/bootstrap.sh into the runner volume.
+      - FORGEJO_RUNNER_REGISTRATION_FILE=/data/.runner
+    volumes:
+      - runner-data:/data
+      # The runner launches per-job containers via the host docker
+      # daemon. Mounting the socket is the standard act_runner
+      # pattern.
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "0:0"
+
+volumes:
+  forgejo-data:
+  runner-data:

@@ -1,0 +1,26 @@
+#cloud-config
+# forcicd.g8.lo — Fedora 43 cloud VM that hosts Forgejo + its
+# Actions runner in a Docker Compose stack. Minimal cloud-init:
+# just SSH + QGA + Docker. The compose stack and runner registration
+# happen via SSH from scripts/install.sh + scripts/bootstrap.sh.
+
+hostname: forcicd
+fqdn: forcicd.g8.lo
+prefer_fqdn_over_hostname: true
+
+users:
+  - name: fedora
+    groups: [wheel, adm, systemd-journal, docker]
+    shell: /bin/bash
+    sudo: ALL=(ALL) NOPASSWD:ALL
+    lock_passwd: true
+    ssh_authorized_keys:
+      - ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABAQDWUsb0I159v27vSBuOOyQMX54iD2zuKZOOy+e5GRCJ3yONNr3Mkdyng67BNfsnvlf8kpgSi0yiaVGeXKSjkrY9YPHe0wkVW0UHZ9uZqYqgVdEzSG3Z0NNkrd/zp3jCztPad+q6iWb1R0iFlK7/h8NihOky9HXOustrtDwnvTgONwJnluxQp1zl86deKP0W9xx3Ky/Jobr3dbfOhJVK3qzF6OL6KaNjpT+hDYjh1OISzrx1jWLxFvZ4r7X2wbRhcNRyD5sTrxcs3z5Xdz/KRT0UhIj47CF4Heoiqtl/aQ5kdjpRqlmC2spJ9WZinsqbb6HhZ1i8Yd2ZycDQZF+S8n1n gwest@Glenns-MacBook-Pro.local
+
+ssh_pwauth: false
+package_update: false
+packages:
+  - qemu-guest-agent
+runcmd:
+  - [ systemctl, enable, --now, qemu-guest-agent ]
+final_message: "forcicd.g8.lo cloud-init complete in $UPTIME seconds"
