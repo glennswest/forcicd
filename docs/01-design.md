@@ -2,10 +2,15 @@
 
 ## Goal
 
-Cut the CI feedback loop from ~5–10 minutes (GitHub-hosted) to
+Cut the CI/CD feedback loop from ~5–10 minutes (GitHub-hosted) to
 ~1–2 minutes (LAN-local), with **zero workflow drift**: the same
 `.github/workflows/ci.yml` file that runs on `github.com` runs
 here too, against the same `actions/*` ecosystem.
+
+This isn't only CI — it's CI/CD. The local pipeline ends with the
+new fastetcd image landing on `fastregistry.g10.lo` and kubetest's
+etcd static pod being rolled to it automatically. End-to-end:
+push-to-deploy.
 
 ## Why Forgejo Actions specifically
 

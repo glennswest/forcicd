@@ -1,6 +1,6 @@
 # forcicd
 
-Local CI for fastetcd (and friends) running on `pve.g8.lo`.
+Local CI/CD for fastetcd (and friends) running on `pve.g8.lo`.
 Forgejo + Forgejo Actions, native GitHub-Actions YAML compatible
 so `.github/workflows/ci.yml` from
 [fastetcd](https://github.com/glennswest/fastetcd) runs unmodified.
@@ -17,7 +17,8 @@ container build → ghcr push → kubetest VM pull → restart
 
 End-to-end ~5–10 minutes per change. A local runner sitting on
 the same LAN, talking to a local registry (`fastregistry.g10.lo`)
-should drop that to ~1–2 minutes.
+and rolling the kubetest etcd pod as the last step, drops that
+to ~1–2 minutes — **push to deploy** on the LAN.
 
 ## Architecture
 

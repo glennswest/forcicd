@@ -4,10 +4,15 @@ Project-specific context. Cross-project rules live in `../CLAUDE.md`.
 
 ## Project summary
 
-Local CI for fastetcd (and siblings) hosted on `pve.g8.lo`.
+Local CI/CD for fastetcd (and siblings) hosted on `pve.g8.lo`.
 Forgejo + Forgejo Actions runner mirroring the GitHub workflow.
 Native GitHub-Actions YAML compatibility means
 `fastetcd/.github/workflows/ci.yml` runs unmodified.
+
+**CI** part: cargo test + build, identical to GitHub.
+**CD** part: push image to `fastregistry.g10.lo` (mkube's
+registry) and trigger a kubetest etcd-pod roll. Closes the
+push-to-deploy loop entirely on the LAN.
 
 ## Version
 
