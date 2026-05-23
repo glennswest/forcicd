@@ -74,6 +74,22 @@ services:
     security_opt:
       - label=disable
 
+  registry:
+    # Plain HTTP Docker registry v2. We tried fastregistry.g10.lo
+    # first (mkube's existing registry) but its /data/registry/
+    # uploads dir is missing — returns 500 on every push. Running a
+    # local one here removes that dependency and keeps the whole
+    # CI/CD loop on the forcicd VM.
+    image: registry:2
+    container_name: forcicd-registry
+    restart: unless-stopped
+    environment:
+      - REGISTRY_STORAGE_DELETE_ENABLED=true
+    volumes:
+      - registry-data:/var/lib/registry
+    ports:
+      - "5000:5000"
+
   dashboard:
     # forcicd-specific ops view — VM/container health, runner
     # labels, CD drift. Lives next to Forgejo (which is the GUI
@@ -102,3 +118,4 @@ services:
 volumes:
   forgejo-data:
   runner-data:
+  registry-data:

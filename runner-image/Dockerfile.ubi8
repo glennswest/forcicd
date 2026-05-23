@@ -1,31 +1,18 @@
-# forcicd-runner-rhel8 — RHEL 8 (UBI 8) variant.
-#
-# Targets OCP 4.7 through 4.12, where RHCOS tracks RHEL 8.x.
-# Same toolchain set as the ubuntu image, packaged from RHEL 8 +
-# EPEL 8.
+# forcicd-runner-rhel8 — UBI 8 + UBI-CRB. See Dockerfile.ubi9 for
+# the rationale. Targets OCP 4.7 → 4.12.
 
 FROM registry.access.redhat.com/ubi8/ubi:latest
 
 ARG GO_VERSION=1.22.6
 ARG RUST_VERSION=stable
-ARG RHEL_ORG_ID=""
-ARG RHEL_ACTIVATION_KEY=""
 
-RUN if [ -n "${RHEL_ORG_ID}" ] && [ -n "${RHEL_ACTIVATION_KEY}" ]; then \
-        subscription-manager register \
-            --org="${RHEL_ORG_ID}" \
-            --activationkey="${RHEL_ACTIVATION_KEY}" \
-        && subscription-manager repos \
-            --enable=codeready-builder-for-rhel-8-$(uname -m)-rpms ; \
-    fi
-
-RUN dnf install -y \
+RUN dnf -y install \
         https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm \
+    && dnf config-manager --set-enabled ubi-8-codeready-builder 2>/dev/null \
+        || dnf config-manager --set-enabled ubi-8-codeready-builder-rpms 2>/dev/null \
+        || true \
     && dnf -y update
 
-# RHEL 8 packages aarch64 cross-tools under slightly different
-# names than RHEL 9 — we get the cross-binutils + cross-gcc from
-# the rust toolchain image plus what EPEL provides.
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc gcc-c++ clang \
         protobuf-compiler \
@@ -37,9 +24,8 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         zstd xz tar zip unzip \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
-        qemu-user-static \
-        kernel-headers kernel-devel \
         python3 python3-pip \
+        skopeo buildah podman \
     && dnf clean all
 
 ENV RUSTUP_HOME=/opt/rust \
@@ -66,11 +52,6 @@ RUN dnf config-manager --add-repo \
         docker-ce-cli \
         docker-buildx-plugin \
     && dnf clean all
-
-RUN if [ -n "${RHEL_ORG_ID}" ]; then \
-        subscription-manager unregister || true ; \
-        subscription-manager clean || true ; \
-    fi
 
 RUN rustc --version \
     && cargo --version \

@@ -94,6 +94,7 @@ else
     DEB12="${LOCAL_REGISTRY}/forcicd-runner-debian12:latest"
     DEB11="${LOCAL_REGISTRY}/forcicd-runner-debian11:latest"
     BOOTC="${LOCAL_REGISTRY}/forcicd-runner-bootc:latest"
+    F43="${LOCAL_REGISTRY}/forcicd-runner-fedora43:latest"
     LABELS=(
         # Ubuntu (default for GitHub-hosted parity)
         "ubuntu-latest:docker://${UB}"
@@ -121,6 +122,10 @@ else
         "bootc:docker://${BOOTC}"
         "bootc-c9s:docker://${BOOTC}"
         "bootc-centos9:docker://${BOOTC}"
+        # Fedora (matches the forcicd VM's own OS)
+        "fedora:docker://${F43}"
+        "fedora-latest:docker://${F43}"
+        "fedora-43:docker://${F43}"
         # Host escape hatch
         "self-hosted:host"
     )

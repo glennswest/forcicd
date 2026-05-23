@@ -24,7 +24,7 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "${HERE}/_lib.sh"
 
-ALL_VARIANTS=(ubuntu22 ubi8 ubi9 ubi10 alpine debian12 debian11 bootc)
+ALL_VARIANTS=(ubuntu22 ubi8 ubi9 ubi10 alpine debian12 debian11 bootc fedora43)
 VARIANTS=("$@")
 if [[ ${#VARIANTS[@]} -eq 0 ]]; then
     VARIANTS=("${ALL_VARIANTS[@]}")
@@ -33,7 +33,7 @@ fi
 # Validate.
 for v in "${VARIANTS[@]}"; do
     case "$v" in
-        ubuntu22|ubi8|ubi9|ubi10|alpine|debian12|debian11|bootc) ;;
+        ubuntu22|ubi8|ubi9|ubi10|alpine|debian12|debian11|bootc|fedora43) ;;
         *) echo "unknown variant: $v (valid: ${ALL_VARIANTS[*]})" >&2; exit 2 ;;
     esac
 done
@@ -66,12 +66,12 @@ REMOTE
 
 for variant in "${VARIANTS[@]}"; do
     tag="${LOCAL_REGISTRY}/forcicd-runner-${variant}:latest"
-    echo "==> build ${tag}"
+    echo "==> docker build ${tag}"
     ssh "${VM_SSH}" "sudo docker build ${BUILD_ARGS} \
         -f /tmp/runner-image/Dockerfile.${variant} \
         -t '${tag}' \
         /tmp/runner-image"
-    echo "==> push ${tag}"
+    echo "==> docker push ${tag}"
     ssh "${VM_SSH}" "sudo docker push '${tag}'"
 done
 

@@ -1,20 +1,13 @@
-# forcicd-runner-rhel10 — UBI 10. See Dockerfile.ubi9 for rationale.
-# Targets OCP 4.19 / proposed 5.0.
+# forcicd-runner-fedora43 — Fedora 43 variant.
+#
+# Fedora is the host OS for forcicd itself, so this gives us an
+# exact-host-match runner option (useful when reproducing a host-
+# behavior bug or testing kernel modules against the host kernel).
 
-FROM registry.access.redhat.com/ubi10/ubi:latest
+FROM fedora:43
 
 ARG GO_VERSION=1.22.6
 ARG RUST_VERSION=stable
-
-RUN (dnf -y install \
-        https://dl.fedoraproject.org/pub/epel/epel-release-latest-10.noarch.rpm \
-        2>/dev/null \
-     || dnf -y install \
-        https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm) \
-    && (dnf config-manager --set-enabled ubi-10-codeready-builder-rpms 2>/dev/null \
-        || dnf config-manager --set-enabled ubi-9-codeready-builder-rpms 2>/dev/null \
-        || true) \
-    && dnf -y update
 
 RUN dnf install -y --setopt=install_weak_deps=False \
         gcc gcc-c++ clang lld \
@@ -28,8 +21,12 @@ RUN dnf install -y --setopt=install_weak_deps=False \
         zstd xz tar zip unzip \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
+        qemu-user-static qemu-img \
+        kernel-headers kernel-devel \
         python3 python3-pip \
         skopeo buildah podman \
+        bootc \
+        docker-cli docker-buildx-plugin \
     && dnf clean all
 
 ENV RUSTUP_HOME=/opt/rust \
@@ -53,18 +50,14 @@ RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
         | tar -C /usr/local -xz \
     && go version
 
-RUN dnf config-manager --add-repo \
-        https://download.docker.com/linux/centos/docker-ce.repo \
-    && dnf install -y --setopt=install_weak_deps=False \
-        docker-ce-cli \
-        docker-buildx-plugin \
-    && dnf clean all
-
 RUN rustc --version \
     && cargo --version \
     && go version \
     && gcc --version \
     && aarch64-linux-gnu-gcc --version \
+    && podman --version \
+    && skopeo --version \
+    && buildah --version \
     && docker --version
 
 WORKDIR /workspace
