@@ -20,7 +20,7 @@ push-to-deploy loop entirely on the LAN.
 
 ## Architecture pillars
 
-- **Single VM** (`forcicd.g8.lo`, VMID 114, IP 192.168.8.154,
+- **Single VM** (`forcicd.g8.lo`, VMID 115, IP 192.168.8.154,
   Fedora 43 cloud). Splittable later.
 - **Docker Compose stack** for Forgejo + act_runner. One file,
   two services, persistent volumes.

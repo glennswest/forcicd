@@ -24,7 +24,7 @@ to ~1–2 minutes — **push to deploy** on the LAN.
 
 ```
 ┌──────────────────────────────────────────────────────────────────┐
-│ forcicd.g8.lo  (192.168.8.154, VMID 114, Fedora 43)              │
+│ forcicd.g8.lo  (192.168.8.154, VMID 115, Fedora 43)              │
 │   - Forgejo server (port 3000 HTTP, 22 SSH)                      │
 │       │ - Mirrors github.com/glennswest/fastetcd                 │
 │       │ - Hosts a local container registry                       │

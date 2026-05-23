@@ -22,24 +22,32 @@ services:
       - FORGEJO__server__ROOT_URL=http://forcicd.g8.lo:3000/
       - FORGEJO__server__DOMAIN=forcicd.g8.lo
       - FORGEJO__server__SSH_DOMAIN=forcicd.g8.lo
-      - FORGEJO__server__SSH_PORT=22
-      - FORGEJO__server__START_SSH_SERVER=true
-      - FORGEJO__server__BUILTIN_SSH_SERVER_USER=git
+      # The codeberg.org/forgejo image already binds OpenSSH on :22
+      # inside the container, so we disable Forgejo's builtin SSH
+      # server. Git operations go over HTTP, which is fine on the LAN.
+      - FORGEJO__server__DISABLE_SSH=true
+      - FORGEJO__server__START_SSH_SERVER=false
       # Allow GitHub-Actions-style external actions (actions/checkout etc.)
       - FORGEJO__actions__ENABLED=true
       - FORGEJO__actions__DEFAULT_ACTIONS_URL=github
       # Mirror config: allow up to 1-minute pull intervals.
       - FORGEJO__cron.update_mirrors__SCHEDULE=@every 1m
       - FORGEJO__mirror__MIN_INTERVAL=1m
+      # Skip the first-run install wizard — we drive setup via API
+      # from scripts/bootstrap.sh. SQLite is fine for one repo;
+      # swap to postgres if we ever scale this out.
+      - FORGEJO__security__INSTALL_LOCK=true
+      - FORGEJO__database__DB_TYPE=sqlite3
+      - FORGEJO__database__PATH=/data/gitea/forgejo.db
+      - FORGEJO__service__DISABLE_REGISTRATION=true
+      - FORGEJO__service__REQUIRE_SIGNIN_VIEW=false
     volumes:
       - forgejo-data:/data
       - /etc/timezone:/etc/timezone:ro
       - /etc/localtime:/etc/localtime:ro
     ports:
-      # web UI / API
+      # web UI / API + git over HTTP
       - "3000:3000"
-      # git SSH
-      - "2222:22"
 
   runner:
     image: code.forgejo.org/forgejo/runner:6

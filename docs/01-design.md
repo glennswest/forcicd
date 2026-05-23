@@ -29,7 +29,7 @@ path entirely while keeping the YAML and the ecosystem.
 
 ```
                                     ┌────────────────────────────────────────┐
-                                    │ forcicd.g8.lo (192.168.8.154, VMID 114)│
+                                    │ forcicd.g8.lo (192.168.8.154, VMID 115)│
    github.com/glennswest/fastetcd ──┤  ▲                                      │
         (canonical, public)         │  │ pull-mirror every 60s                │
                                     │  ▼                                      │
@@ -53,7 +53,7 @@ path entirely while keeping the YAML and the ecosystem.
 
 ## VM specs (matches kubetest pattern)
 
-- VMID **114**, hostname **forcicd.g8.lo**, IP **192.168.8.154/24**
+- VMID **115**, hostname **forcicd.g8.lo**, IP **192.168.8.154/24** (VMID 114 was already in use by an LXC `registry.gw.lo`)
 - Fedora 43 cloud image (already on pve, `/var/lib/vz/template/iso/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2`)
 - 4 vCPU / 8 GiB RAM / 64 GiB disk (bigger than kubetest — we host the runner workspace + image cache here)
 - vmbr0, static IP via cicustom
