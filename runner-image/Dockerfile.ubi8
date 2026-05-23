@@ -1,5 +1,5 @@
-# forcicd-runner-rhel8 — UBI 8 + UBI-CRB. See Dockerfile.ubi9 for
-# the rationale. Targets OCP 4.7 → 4.12.
+# forcicd-runner-rhel8 — UBI 8. See Dockerfile.ubi9 for the same
+# reduced-toolchain rationale. Targets OCP 4.7 → 4.12.
 
 FROM registry.access.redhat.com/ubi8/ubi:latest
 
@@ -8,19 +8,15 @@ ARG RUST_VERSION=stable
 
 RUN dnf -y install \
         https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm \
-    && dnf config-manager --set-enabled ubi-8-codeready-builder 2>/dev/null \
-        || dnf config-manager --set-enabled ubi-8-codeready-builder-rpms 2>/dev/null \
-        || true \
     && dnf -y update
 
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
         gcc gcc-c++ clang \
-        protobuf-compiler \
         make automake autoconf libtool pkgconf-pkg-config \
         openssl-devel \
         elfutils-libelf-devel \
-        bc flex bison \
-        kmod cpio dwarves rsync \
+        bc \
+        kmod cpio rsync \
         zstd xz tar zip unzip \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
@@ -36,7 +32,6 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
         --profile minimal \
     && /opt/cargo/bin/rustup component add rustfmt clippy \
     && /opt/cargo/bin/rustup target add \
-        aarch64-unknown-linux-gnu \
         aarch64-unknown-linux-musl \
         x86_64-unknown-linux-musl \
     && chmod -R a+rwX /opt/cargo /opt/rust

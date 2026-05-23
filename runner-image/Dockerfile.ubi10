@@ -1,5 +1,5 @@
-# forcicd-runner-rhel10 — UBI 10. See Dockerfile.ubi9 for rationale.
-# Targets OCP 4.19 / proposed 5.0.
+# forcicd-runner-rhel10 — UBI 10. See Dockerfile.ubi9 for the same
+# reduced-toolchain rationale. Targets OCP 4.19 / proposed 5.0.
 
 FROM registry.access.redhat.com/ubi10/ubi:latest
 
@@ -11,20 +11,15 @@ RUN (dnf -y install \
         2>/dev/null \
      || dnf -y install \
         https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm) \
-    && (dnf config-manager --set-enabled ubi-10-codeready-builder-rpms 2>/dev/null \
-        || dnf config-manager --set-enabled ubi-9-codeready-builder-rpms 2>/dev/null \
-        || true) \
     && dnf -y update
 
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
         gcc gcc-c++ clang lld \
-        gcc-aarch64-linux-gnu \
-        protobuf-compiler \
         make automake autoconf libtool pkgconf-pkg-config \
         openssl-devel \
         elfutils-libelf-devel \
-        bc flex bison \
-        kmod cpio dwarves rsync \
+        bc \
+        kmod cpio rsync \
         zstd xz tar zip unzip \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
@@ -40,13 +35,9 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
         --profile minimal \
     && /opt/cargo/bin/rustup component add rustfmt clippy \
     && /opt/cargo/bin/rustup target add \
-        aarch64-unknown-linux-gnu \
         aarch64-unknown-linux-musl \
         x86_64-unknown-linux-musl \
-    && chmod -R a+rwX /opt/cargo /opt/rust \
-    && mkdir -p /opt/cargo \
-    && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
-        > /opt/cargo/config.toml
+    && chmod -R a+rwX /opt/cargo /opt/rust
 
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
     && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
@@ -64,7 +55,6 @@ RUN rustc --version \
     && cargo --version \
     && go version \
     && gcc --version \
-    && aarch64-linux-gnu-gcc --version \
     && docker --version
 
 WORKDIR /workspace

@@ -1,36 +1,36 @@
-# forcicd-runner-rhel9 — UBI 9 + the UBI-CRB repo (which is the
-# free mirror of the CRB packages: protobuf-compiler, flex, bison,
-# dwarves, etc.). No Red Hat subscription required.
+# forcicd-runner-rhel9 — UBI 9.
 #
-# A few packages stay subscription-only and are simply omitted:
-#   - kernel-devel / kernel-headers (RHEL Server only)
-#   - qemu-user-static (RHEL Server only; EPEL has qemu-system-*)
-#   - bootc (RHEL 9.4+ Server only)
-# Jobs that need those should target the bootc or fedora43 runner.
+# Targets OCP 4.13 → 4.18 / current-stable. RHCOS tracks RHEL 9.x.
+#
+# Reduced toolchain: UBI without RHEL subscription doesn't carry
+# flex/bison/dwarves/protobuf-compiler/kernel-devel/qemu-user-static
+# nor gcc-aarch64-linux-gnu. Those live in full RHEL CRB only —
+# not in UBI's CRB clone, and not in EPEL. For jobs that need
+# them, target ubuntu22, debian12, fedora43, or bootc. UBI here
+# still gives you:
+#   * native gcc/clang + rust (with x86_64/aarch64 musl targets,
+#     which use rust-lld and don't need an external C cross-linker)
+#   * go (cross-compile via GOARCH; pure-go works fine)
+#   * make/autoconf
+#   * podman/skopeo/buildah + docker CLI
+# Useful for verifying rust/go/C/container builds on RHEL libc.
 
 FROM registry.access.redhat.com/ubi9/ubi:latest
 
 ARG GO_VERSION=1.22.6
 ARG RUST_VERSION=stable
 
-# UBI ships with BaseOS + AppStream. Enabling the UBI CRB repo
-# unlocks build-time packages without subscription, and EPEL fills
-# the rest.
 RUN dnf -y install \
         https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
-    && dnf config-manager --set-enabled ubi-9-codeready-builder-rpms 2>/dev/null \
-        || dnf config-manager --enablerepo='*codeready*' 2>/dev/null || true \
     && dnf -y update
 
-RUN dnf install -y --setopt=install_weak_deps=False \
+RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
         gcc gcc-c++ clang lld \
-        gcc-aarch64-linux-gnu \
-        protobuf-compiler \
         make automake autoconf libtool pkgconf-pkg-config \
         openssl-devel \
         elfutils-libelf-devel \
-        bc flex bison \
-        kmod cpio dwarves rsync \
+        bc \
+        kmod cpio rsync \
         zstd xz tar zip unzip \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
@@ -46,13 +46,9 @@ RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
         --profile minimal \
     && /opt/cargo/bin/rustup component add rustfmt clippy \
     && /opt/cargo/bin/rustup target add \
-        aarch64-unknown-linux-gnu \
         aarch64-unknown-linux-musl \
         x86_64-unknown-linux-musl \
-    && chmod -R a+rwX /opt/cargo /opt/rust \
-    && mkdir -p /opt/cargo \
-    && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
-        > /opt/cargo/config.toml
+    && chmod -R a+rwX /opt/cargo /opt/rust
 
 RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
     && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
@@ -70,7 +66,6 @@ RUN rustc --version \
     && cargo --version \
     && go version \
     && gcc --version \
-    && aarch64-linux-gnu-gcc --version \
     && docker --version
 
 WORKDIR /workspace
