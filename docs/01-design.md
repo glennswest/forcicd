@@ -28,34 +28,41 @@ path entirely while keeping the YAML and the ecosystem.
 ## Topology
 
 ```
-                                    ┌────────────────────────────────────────┐
-                                    │ forcicd.g8.lo (192.168.8.154, VMID 115)│
-   github.com/glennswest/fastetcd ──┤  ▲                                      │
-        (canonical, public)         │  │ pull-mirror every 60s                │
-                                    │  ▼                                      │
-                                    │  Forgejo server (port 3000)             │
-                                    │   ├─ web UI                             │
-                                    │   ├─ Git over SSH (port 22)             │
-                                    │   └─ Container registry                 │
-                                    │      (image storage)                    │
-                                    │                                          │
-                                    │  act_runner (per-job ephemeral docker)  │
-                                    │   ├─ pulls workflow YAML                │
-                                    │   ├─ runs jobs in docker containers     │
-                                    │   └─ pushes images to fastregistry      │
-                                    └────────────────────────────────────────┘
+                                    ┌──────────────────────────────────────────┐
+                                    │ forcicd.g8.lo (192.168.8.154, VMID 115)  │
+   github.com/glennswest/fastetcd ──┤  ▲                                        │
+        (canonical, public)         │  │ pull-mirror every 60s                  │
+                                    │  ▼                                        │
+                                    │  Forgejo (:3000)  ── GUI for code/runs/   │
+                                    │   ├─ web UI                                │
+                                    │   ├─ git over HTTP                         │
+                                    │   └─ actions API                           │
+                                    │                                            │
+                                    │  act_runner ── 35 labels → 8 toolchain     │
+                                    │     images (ubuntu/rhel-{8,9,10}/          │
+                                    │     ocp-4.7…5.0/alpine/debian/bootc)       │
+                                    │                                            │
+                                    │  CD watcher (systemd timer 30s) ──         │
+                                    │     poll for new green builds              │
+                                    │                                            │
+                                    │  Ops dashboard (:8090) ── health + CD drift│
+                                    └──────────────────────────────────────────┘
                                                   │
-                                                  │ podman push
+                                                  │ docker push (insecure-registries)
                                                   ▼
                                        fastregistry.g10.lo
                                        (mkube-owned, already exists)
+                                                  │
+                                                  │ kubectl set image (via watcher)
+                                                  ▼
+                                       kubetest.g8.lo etcd pod
 ```
 
 ## VM specs (matches kubetest pattern)
 
 - VMID **115**, hostname **forcicd.g8.lo**, IP **192.168.8.154/24** (VMID 114 was already in use by an LXC `registry.gw.lo`)
 - Fedora 43 cloud image (already on pve, `/var/lib/vz/template/iso/Fedora-Cloud-Base-Generic-43-1.6.x86_64.qcow2`)
-- 4 vCPU / 8 GiB RAM / 64 GiB disk (bigger than kubetest — we host the runner workspace + image cache here)
+- 12 vCPU / 32 GiB RAM / 64 GiB disk (bumped from 4/8 after image-build perf complaints; pve.g8.lo has 188 GiB / 20 cores headroom)
 - vmbr0, static IP via cicustom
 - Same SSH key as kubetest
 
@@ -107,8 +114,12 @@ $ # Total: ~5 min, all on the LAN.
 ## Limits / known gaps
 
 - **One runner.** Concurrency capped at one job at a time. Easy
-  to add more containers later; the bootleneck this turn is
+  to add more containers later; the bottleneck this turn is
   iteration speed, not throughput.
+- **CD half is opt-in.** `scripts/install-cd.sh` is run
+  separately from `make up`. Without
+  `/etc/forcicd/kubetest.kubeconfig` on the VM, the watcher
+  builds + pushes the image but skips the cluster roll.
 - **`actions/checkout@v4`** uses GitHub's hosted action by
   default. Forgejo Actions mirrors these on demand from
   github.com, so the first run after a fresh install does an
