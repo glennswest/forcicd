@@ -1,0 +1,81 @@
+# forcicd-runner-rhel8 — RHEL 8 (UBI 8) variant.
+#
+# Targets OCP 4.7 through 4.12, where RHCOS tracks RHEL 8.x.
+# Same toolchain set as the ubuntu image, packaged from RHEL 8 +
+# EPEL 8.
+
+FROM registry.access.redhat.com/ubi8/ubi:latest
+
+ARG GO_VERSION=1.22.6
+ARG RUST_VERSION=stable
+ARG RHEL_ORG_ID=""
+ARG RHEL_ACTIVATION_KEY=""
+
+RUN if [ -n "${RHEL_ORG_ID}" ] && [ -n "${RHEL_ACTIVATION_KEY}" ]; then \
+        subscription-manager register \
+            --org="${RHEL_ORG_ID}" \
+            --activationkey="${RHEL_ACTIVATION_KEY}" \
+        && subscription-manager repos \
+            --enable=codeready-builder-for-rhel-8-$(uname -m)-rpms ; \
+    fi
+
+RUN dnf install -y \
+        https://dl.fedoraproject.org/pub/epel/epel-release-latest-8.noarch.rpm \
+    && dnf -y update
+
+# RHEL 8 packages aarch64 cross-tools under slightly different
+# names than RHEL 9 — we get the cross-binutils + cross-gcc from
+# the rust toolchain image plus what EPEL provides.
+RUN dnf install -y --setopt=install_weak_deps=False \
+        gcc gcc-c++ clang \
+        protobuf-compiler \
+        make automake autoconf libtool pkgconf-pkg-config \
+        openssl-devel \
+        elfutils-libelf-devel \
+        bc flex bison \
+        kmod cpio dwarves rsync \
+        zstd xz tar zip unzip \
+        git curl wget jq sudo which gnupg2 \
+        ca-certificates \
+        qemu-user-static \
+        kernel-headers kernel-devel \
+        python3 python3-pip \
+    && dnf clean all
+
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:/usr/local/go/bin:${PATH}
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+        --default-toolchain ${RUST_VERSION} \
+        --profile minimal \
+    && /opt/cargo/bin/rustup component add rustfmt clippy \
+    && /opt/cargo/bin/rustup target add \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        x86_64-unknown-linux-musl \
+    && chmod -R a+rwX /opt/cargo /opt/rust
+
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+        | tar -C /usr/local -xz \
+    && go version
+
+RUN dnf config-manager --add-repo \
+        https://download.docker.com/linux/centos/docker-ce.repo \
+    && dnf install -y --setopt=install_weak_deps=False \
+        docker-ce-cli \
+        docker-buildx-plugin \
+    && dnf clean all
+
+RUN if [ -n "${RHEL_ORG_ID}" ]; then \
+        subscription-manager unregister || true ; \
+        subscription-manager clean || true ; \
+    fi
+
+RUN rustc --version \
+    && cargo --version \
+    && go version \
+    && gcc --version \
+    && docker --version
+
+WORKDIR /workspace

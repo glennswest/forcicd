@@ -1,0 +1,89 @@
+# forcicd-runner-debian11 — Debian 11 "bullseye" (oldstable).
+
+FROM debian:bullseye
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.22.6
+ARG RUST_VERSION=stable
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        lld \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+        linux-libc-dev-arm64-cross \
+        crossbuild-essential-arm64 \
+        protobuf-compiler \
+        pkg-config \
+        libssl-dev \
+        libelf-dev \
+        libudev-dev \
+        bc \
+        flex \
+        bison \
+        kmod \
+        cpio \
+        dwarves \
+        rsync \
+        bsdmainutils \
+        device-tree-compiler \
+        u-boot-tools \
+        qemu-user-static \
+        binfmt-support \
+        linux-headers-amd64 \
+        ca-certificates \
+        curl \
+        wget \
+        git \
+        jq \
+        sudo \
+        gnupg \
+        lsb-release \
+        unzip \
+        zip \
+        xz-utils \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:/usr/local/go/bin:${PATH}
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+        --default-toolchain ${RUST_VERSION} \
+        --profile minimal \
+    && /opt/cargo/bin/rustup component add rustfmt clippy \
+    && /opt/cargo/bin/rustup target add \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        x86_64-unknown-linux-musl \
+    && chmod -R a+rwX /opt/cargo /opt/rust \
+    && mkdir -p /opt/cargo \
+    && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
+        > /opt/cargo/config.toml
+
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+        | tar -C /usr/local -xz \
+    && go version
+
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/debian/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN rustc --version \
+    && cargo --version \
+    && go version \
+    && gcc --version \
+    && aarch64-linux-gnu-gcc --version \
+    && docker --version
+
+WORKDIR /workspace

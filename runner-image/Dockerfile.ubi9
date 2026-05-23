@@ -1,0 +1,97 @@
+# forcicd-runner-rhel9 — RHEL 9 (UBI 9) variant.
+#
+# Targets OCP 4.13 through 4.18 / current-stable, where RHCOS
+# tracks RHEL 9.x. Same toolchain set as the ubuntu image.
+#
+# Build args:
+#   RHEL_ORG_ID + RHEL_ACTIVATION_KEY (optional): if both set,
+#   register with subscription-manager so we can pull from the
+#   full RHEL repos (CodeReady Builder etc). Otherwise stay on
+#   UBI's free BaseOS + AppStream + EPEL.
+
+FROM registry.access.redhat.com/ubi9/ubi:latest
+
+ARG GO_VERSION=1.22.6
+ARG RUST_VERSION=stable
+ARG RHEL_ORG_ID=""
+ARG RHEL_ACTIVATION_KEY=""
+
+# ----- Optional subscription registration --------------------------
+RUN if [ -n "${RHEL_ORG_ID}" ] && [ -n "${RHEL_ACTIVATION_KEY}" ]; then \
+        subscription-manager register \
+            --org="${RHEL_ORG_ID}" \
+            --activationkey="${RHEL_ACTIVATION_KEY}" \
+        && subscription-manager repos \
+            --enable=codeready-builder-for-rhel-9-$(uname -m)-rpms ; \
+    fi
+
+# ----- EPEL (gives us cross-compilers + a few CI tools) ------------
+RUN dnf install -y \
+        https://dl.fedoraproject.org/pub/epel/epel-release-latest-9.noarch.rpm \
+    && dnf -y update
+
+# ----- Base toolchain + cross-arch + kernel-build prereqs ---------
+RUN dnf install -y --setopt=install_weak_deps=False \
+        gcc gcc-c++ clang lld \
+        gcc-aarch64-linux-gnu \
+        protobuf-compiler \
+        make automake autoconf libtool pkgconf-pkg-config \
+        openssl-devel \
+        elfutils-libelf-devel \
+        bc flex bison \
+        kmod cpio dwarves rsync \
+        zstd xz tar zip unzip \
+        git curl wget jq sudo which gnupg2 \
+        ca-certificates \
+        qemu-user-static qemu-img \
+        kernel-headers kernel-devel \
+        python3 python3-pip \
+        skopeo buildah podman \
+        bootc \
+    && dnf clean all
+
+# ----- Rust --------------------------------------------------------
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:/usr/local/go/bin:${PATH}
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+        --default-toolchain ${RUST_VERSION} \
+        --profile minimal \
+    && /opt/cargo/bin/rustup component add rustfmt clippy \
+    && /opt/cargo/bin/rustup target add \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        x86_64-unknown-linux-musl \
+    && chmod -R a+rwX /opt/cargo /opt/rust \
+    && mkdir -p /opt/cargo \
+    && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
+        > /opt/cargo/config.toml
+
+# ----- Go ----------------------------------------------------------
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+        | tar -C /usr/local -xz \
+    && go version
+
+# ----- Docker CLI + buildx (host socket mounted in by runner) -----
+RUN dnf config-manager --add-repo \
+        https://download.docker.com/linux/centos/docker-ce.repo \
+    && dnf install -y --setopt=install_weak_deps=False \
+        docker-ce-cli \
+        docker-buildx-plugin \
+    && dnf clean all
+
+# ----- Optional teardown of subscription (don't ship creds) -------
+RUN if [ -n "${RHEL_ORG_ID}" ]; then \
+        subscription-manager unregister || true ; \
+        subscription-manager clean || true ; \
+    fi
+
+RUN rustc --version \
+    && cargo --version \
+    && go version \
+    && gcc --version \
+    && aarch64-linux-gnu-gcc --version \
+    && docker --version
+
+WORKDIR /workspace

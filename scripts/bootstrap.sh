@@ -68,9 +68,49 @@ else
     # Runner labels: every github-hosted `runs-on:` value the
     # fastetcd workflow uses is mapped to our local toolchain image
     # so cargo / go / cross-compile / kernel-build all just work.
+    # RHEL labels cover the RHCOS lineage from OCP 4.7 → 5.0.
+    # Alpine + Debian variants round out the major distro families.
     # `self-hosted:host` is the escape hatch for jobs that need to
     # touch the VM's docker / qemu directly.
-    RUNNER_IMAGE="${RUNNER_IMAGE:-${LOCAL_REGISTRY}/forcicd-runner:latest}"
+    UB="${LOCAL_REGISTRY}/forcicd-runner-ubuntu22:latest"
+    R8="${LOCAL_REGISTRY}/forcicd-runner-ubi8:latest"
+    R9="${LOCAL_REGISTRY}/forcicd-runner-ubi9:latest"
+    R10="${LOCAL_REGISTRY}/forcicd-runner-ubi10:latest"
+    ALP="${LOCAL_REGISTRY}/forcicd-runner-alpine:latest"
+    DEB12="${LOCAL_REGISTRY}/forcicd-runner-debian12:latest"
+    DEB11="${LOCAL_REGISTRY}/forcicd-runner-debian11:latest"
+    BOOTC="${LOCAL_REGISTRY}/forcicd-runner-bootc:latest"
+    LABELS=(
+        # Ubuntu (default for GitHub-hosted parity)
+        "ubuntu-latest:docker://${UB}"
+        "ubuntu-22.04:docker://${UB}"
+        "ubuntu-24.04:docker://${UB}"
+        # RHEL family
+        "rhel-8:docker://${R8}"   "ubi-8:docker://${R8}"
+        "rhel-9:docker://${R9}"   "ubi-9:docker://${R9}"
+        "rhel-10:docker://${R10}" "ubi-10:docker://${R10}"
+        # OCP-version aliases (OCP → RHCOS-base mapping)
+        "ocp-4.7:docker://${R8}"   "ocp-4.8:docker://${R8}"
+        "ocp-4.9:docker://${R8}"   "ocp-4.10:docker://${R8}"
+        "ocp-4.11:docker://${R8}"  "ocp-4.12:docker://${R8}"
+        "ocp-4.13:docker://${R9}"  "ocp-4.14:docker://${R9}"
+        "ocp-4.15:docker://${R9}"  "ocp-4.16:docker://${R9}"
+        "ocp-4.17:docker://${R9}"  "ocp-4.18:docker://${R9}"
+        "ocp-4.19:docker://${R10}" "ocp-5.0:docker://${R10}"
+        # Alpine (musl)
+        "alpine:docker://${ALP}"      "alpine-latest:docker://${ALP}"
+        # Debian
+        "debian:docker://${DEB12}"    "debian-latest:docker://${DEB12}"
+        "debian-12:docker://${DEB12}" "bookworm:docker://${DEB12}"
+        "debian-11:docker://${DEB11}" "bullseye:docker://${DEB11}"
+        # Bootc (bootable container) — for OCP-bootc / RHCOS-bootc work
+        "bootc:docker://${BOOTC}"
+        "bootc-c9s:docker://${BOOTC}"
+        "bootc-centos9:docker://${BOOTC}"
+        # Host escape hatch
+        "self-hosted:host"
+    )
+    LABEL_CSV=$(IFS=,; echo "${LABELS[*]}")
     # Stop the crash-looping runner so we can write into its volume.
     ssh "${VM_SSH}" "sudo docker stop forgejo-runner >/dev/null 2>&1 || true"
     # One-shot register on the shared docker bridge so the runner
@@ -85,7 +125,7 @@ else
             --instance http://forgejo:3000 \
             --token '${TOKEN}' \
             --name forcicd-runner \
-            --labels 'ubuntu-latest:docker://${RUNNER_IMAGE},ubuntu-22.04:docker://${RUNNER_IMAGE},ubuntu-24.04:docker://${RUNNER_IMAGE},self-hosted:host'" >/dev/null
+            --labels '${LABEL_CSV}'" >/dev/null
     # Now start the long-lived runner.
     ssh "${VM_SSH}" "sudo docker start forgejo-runner" >/dev/null
     echo "    runner registered + started"

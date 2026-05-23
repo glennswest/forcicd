@@ -1,0 +1,88 @@
+# forcicd-runner-alpine — Alpine (musl) variant.
+#
+# Useful when CI needs to verify musl-target builds end-to-end
+# (fastetcd's x86_64-unknown-linux-musl + aarch64 musl targets,
+# scratch/distroless container builds, etc.).
+
+FROM alpine:3.20
+
+ARG GO_VERSION=1.22.6
+ARG RUST_VERSION=stable
+
+# Alpine packages cover most of what we need; the cross
+# toolchains for aarch64 are in the `community` repo.
+RUN apk add --no-cache \
+        build-base \
+        clang \
+        lld \
+        gcc \
+        g++ \
+        musl-dev \
+        linux-headers \
+        protobuf \
+        protobuf-dev \
+        pkgconf \
+        openssl-dev \
+        elfutils-dev \
+        bc \
+        flex \
+        bison \
+        make \
+        cmake \
+        kmod \
+        cpio \
+        rsync \
+        zstd \
+        xz \
+        tar \
+        zip \
+        unzip \
+        git \
+        curl \
+        wget \
+        jq \
+        sudo \
+        gnupg \
+        bash \
+        ca-certificates \
+        qemu-aarch64 \
+        nodejs \
+        npm \
+        python3 \
+        py3-pip
+
+# aarch64 cross toolchain via Alpine's cross packages.
+RUN apk add --no-cache \
+        gcc-aarch64-none-elf \
+        || true   # not always available; rustup target alone is often enough
+
+# ----- Rust --------------------------------------------------------
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:/usr/local/go/bin:${PATH}
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+        --default-toolchain ${RUST_VERSION} \
+        --profile minimal \
+    && /opt/cargo/bin/rustup component add rustfmt clippy \
+    && /opt/cargo/bin/rustup target add \
+        aarch64-unknown-linux-musl \
+        x86_64-unknown-linux-musl \
+    && chmod -R a+rwX /opt/cargo /opt/rust
+
+# ----- Go ----------------------------------------------------------
+RUN ARCH=$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/') \
+    && wget -q "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" -O /tmp/go.tgz \
+    && tar -C /usr/local -xzf /tmp/go.tgz \
+    && rm /tmp/go.tgz \
+    && go version
+
+# ----- Docker CLI + buildx (host socket mounted in by runner) -----
+RUN apk add --no-cache docker-cli docker-cli-buildx
+
+RUN rustc --version \
+    && cargo --version \
+    && go version \
+    && gcc --version \
+    && docker --version
+
+WORKDIR /workspace
