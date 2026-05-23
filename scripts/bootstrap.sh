@@ -16,6 +16,16 @@ source "${HERE}/_lib.sh"
 mkdir -p "${REPO_ROOT}/build"
 PW_FILE="${REPO_ROOT}/build/admin-password"
 
+# Helper: after the admin password lands locally, copy it to the
+# VM so /etc/forcicd/admin-password (read-only-mounted into the
+# dashboard + CD watcher) actually has a real password.
+push_admin_password_to_vm() {
+    if [[ -f "${PW_FILE}" ]]; then
+        scp -q "${PW_FILE}" "${VM_SSH}:/tmp/admin-password"
+        ssh "${VM_SSH}" 'sudo install -m 0600 /tmp/admin-password /etc/forcicd/admin-password && rm -f /tmp/admin-password'
+    fi
+}
+
 # ----- 1. admin user --------------------------------------------
 echo "==> ensure admin user '${FORGEJO_ADMIN_USER}'"
 if ssh "${VM_SSH}" "sudo docker exec -u 1000 forgejo forgejo admin user list --admin 2>/dev/null | grep -qw '${FORGEJO_ADMIN_USER}'"; then
@@ -32,6 +42,10 @@ else
         --must-change-password=false" >/dev/null
     echo "    admin created. Password at ${PW_FILE}"
 fi
+# Always sync the password to the VM — install.sh created an
+# empty placeholder, and the dashboard / CD watcher need the
+# real value to authenticate against the Forgejo API.
+push_admin_password_to_vm
 
 # Helper for authenticated API calls.
 api() {

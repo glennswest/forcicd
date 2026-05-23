@@ -25,49 +25,87 @@ to ~1–2 minutes — **push to deploy** on the LAN.
 ```
 ┌──────────────────────────────────────────────────────────────────┐
 │ forcicd.g8.lo  (192.168.8.154, VMID 115, Fedora 43)              │
-│   - Forgejo server (port 3000 HTTP, 22 SSH)                      │
-│       │ - Mirrors github.com/glennswest/fastetcd                 │
-│       │ - Hosts a local container registry                       │
-│       │                                                           │
-│   - act_runner (Forgejo's GitHub-Actions-compatible runner)      │
-│       runs every job inside a fresh container, same as upstream  │
+│   - Forgejo server (port 3000 HTTP — GUI for code, workflows,    │
+│     runners, settings, mirror)                                   │
+│   - act_runner (Forgejo's GitHub-Actions-compatible runner) —    │
+│     8 toolchain image variants registered as labels              │
+│   - CD watcher (systemd timer, polls every 30s) — when a new     │
+│     green build lands on main, fetches the artifact, builds the  │
+│     scratch container, pushes to fastregistry, rolls kubetest    │
+│   - Ops dashboard (port 8090) — system + CD state                │
 └──────────────────────────────────────────────────────────────────┘
             │                                       ▲
             │ image push                            │ git pull mirror
             ▼                                       │
    fastregistry.g10.lo                  github.com/glennswest/fastetcd
-   (already exists; mkube)
+   (mkube; already exists)
 ```
 
-Both Forgejo and the runner live on the same VM as a Docker
-Compose stack. Simpler than two VMs; we can split later if scale
-demands.
+All services run as a Docker Compose stack on a single VM. Splittable
+later if scale demands it.
 
 ## What this is NOT
 
-- Not a replacement for GitHub Actions — we keep that working too
+- Not a replacement for GitHub Actions — that keeps running too,
   so external contributors / public test results still flow.
-- Not a generic CI server for unrelated projects — just fastetcd
-  and its siblings for now. The pattern generalizes; the initial
-  setup is scoped.
+- Not a generic multi-tenant CI service — scoped to fastetcd and
+  siblings. The pattern generalizes; the initial setup is scoped.
 
-## Status
+## Runner labels (35+)
 
-Pre-alpha scaffolding. Scripts written; no VM provisioned yet.
+The runner exposes every label a workflow might use, mapped to one
+of 8 prebuilt toolchain images. All images carry: rust stable
+(+ aarch64-gnu / aarch64-musl / x86_64-musl targets), go 1.22 with
+cross-compile, C (gcc + gcc-aarch64-linux-gnu + headers), kernel
+build prereqs (make/bc/flex/bison/libssl/libelf/dwarves/cpio/kmod),
+docker CLI + buildx, qemu-user-static for multi-arch builds.
+
+| Label(s) | Image | Notes |
+|---|---|---|
+| `ubuntu-latest`, `ubuntu-22.04`, `ubuntu-24.04` | `forcicd-runner-ubuntu22` | GitHub-parity default |
+| `rhel-8`, `ubi-8`, `ocp-4.7` … `ocp-4.12` | `forcicd-runner-ubi8` | RHCOS 4.7→4.12 era |
+| `rhel-9`, `ubi-9`, `ocp-4.13` … `ocp-4.18` | `forcicd-runner-ubi9` | RHCOS 4.13→4.18 era. bootc CLI present. |
+| `rhel-10`, `ubi-10`, `ocp-4.19`, `ocp-5.0` | `forcicd-runner-ubi10` | RHCOS 4.19 / proposed 5.0. bootc CLI present. |
+| `alpine`, `alpine-latest` | `forcicd-runner-alpine` | musl target verification |
+| `debian`, `debian-12`, `bookworm` | `forcicd-runner-debian12` | |
+| `debian-11`, `bullseye` | `forcicd-runner-debian11` | oldstable |
+| `bootc`, `bootc-c9s`, `bootc-centos9` | `forcicd-runner-bootc` | CentOS Stream 9 bootc + podman/buildah/skopeo |
+| `self-hosted` | host | escape hatch for jobs that need direct docker/qemu |
+
+UBI images optionally register with `subscription-manager` for full
+RHEL repos when `RHEL_ORG_ID` + `RHEL_ACTIVATION_KEY` are passed as
+build args.
+
+## GUIs
+
+| URL | What it shows |
+|---|---|
+| `http://forcicd.g8.lo:3000` | **Forgejo** — code, workflow runs, runners, mirror settings, admin |
+| `http://forcicd.g8.lo:8090` | **forcicd ops dashboard** — VM/container health, runner labels, CD drift |
+
+The CLI equivalents are `make status` (point-in-time) and
+`make verify` (nonzero on first failure).
 
 ## Quick start
 
 ```
-cp proxmox.env.sample proxmox.env       # already-known good defaults
-./scripts/provision.sh                  # build the forgejo VM
-./scripts/install.sh                    # bring up Forgejo + runner via compose
-./scripts/bootstrap.sh                  # create admin user, mirror fastetcd repo,
-                                        # register the runner
+cp proxmox.env.sample proxmox.env
+make up         # provision VM + install stack + bootstrap
+make images     # build all 8 runner toolchain images (slow first time)
+./scripts/install-cd.sh   # opt-in: install the CD watcher on the VM
+make verify     # end-to-end smoke
 ```
 
-After bootstrap, browse to `http://forcicd.g8.lo:3000`. The runner
-should appear as registered. Push a commit to fastetcd `main` —
-the mirror picks it up within ~1 minute and triggers the workflow.
+Open `http://forcicd.g8.lo:3000` and you should see the `ci/fastetcd`
+mirror. Push a commit to fastetcd `main` upstream — the mirror picks
+it up within ~1 minute, the runner picks up the job, and (with CD
+enabled) within ~5 minutes the new image is on `fastregistry.g10.lo`
+and the kubetest pod has been rolled.
+
+## VM specs
+
+12 vCPU, 32 GiB RAM, 64 GiB disk, Fedora 43 cloud. Bumped from 4/8
+because image builds + parallel CI jobs both want headroom.
 
 ## License
 

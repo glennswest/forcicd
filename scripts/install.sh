@@ -10,8 +10,12 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "${HERE}/_lib.sh"
 
-# Sync the compose file over.
+# Sync the compose file + dashboard build context.
 scp -q "${REPO_ROOT}/forgejo/compose.yml" "${VM_SSH}:/tmp/compose.yml"
+ssh "${VM_SSH}" 'sudo install -d -m 0755 /etc/forcicd/dashboard /var/lib/forcicd && sudo touch /etc/forcicd/admin-password && sudo chmod 0600 /etc/forcicd/admin-password'
+scp -q "${REPO_ROOT}/dashboard/Dockerfile" "${REPO_ROOT}/dashboard/dashboard.py" \
+    "${VM_SSH}:/tmp/"
+ssh "${VM_SSH}" 'sudo install -m 0644 /tmp/Dockerfile /etc/forcicd/dashboard/Dockerfile && sudo install -m 0755 /tmp/dashboard.py /etc/forcicd/dashboard/dashboard.py && rm -f /tmp/Dockerfile /tmp/dashboard.py'
 
 ssh "${VM_SSH}" 'sudo bash -se' <<'REMOTE'
 set -euxo pipefail

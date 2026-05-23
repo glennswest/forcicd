@@ -1,0 +1,13 @@
+[Unit]
+Description=forcicd CD watcher — poll Forgejo, deploy new green builds
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/forcicd/watcher.sh
+# Run inside the forgejo compose network so it can reach the
+# forgejo container by name (matches deploy.sh's expectations).
+Environment=FORGEJO_URL=http://localhost:3000
+StandardOutput=journal
+StandardError=journal

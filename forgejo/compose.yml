@@ -74,6 +74,31 @@ services:
     security_opt:
       - label=disable
 
+  dashboard:
+    # forcicd-specific ops view — VM/container health, runner
+    # labels, CD drift. Lives next to Forgejo (which is the GUI
+    # for everything else: code, runs, settings, mirror).
+    build:
+      context: ./dashboard
+      dockerfile: Dockerfile
+    image: forcicd-dashboard:local
+    container_name: forcicd-dashboard
+    restart: unless-stopped
+    depends_on:
+      - forgejo
+    environment:
+      - FORGEJO_URL=http://forgejo:3000
+      - FORGEJO_REPO=ci/fastetcd
+      - FORGEJO_ADMIN_USER=ci
+    volumes:
+      - /etc/forcicd/admin-password:/etc/forcicd/admin-password:ro
+      - /var/lib/forcicd:/var/lib/forcicd:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro,z
+    security_opt:
+      - label=disable
+    ports:
+      - "8090:8090"
+
 volumes:
   forgejo-data:
   runner-data:

@@ -1,0 +1,11 @@
+[Unit]
+Description=Trigger forcicd CD watcher every 30s
+
+[Timer]
+OnBootSec=1m
+OnUnitActiveSec=30s
+Unit=forcicd-cd.service
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target
