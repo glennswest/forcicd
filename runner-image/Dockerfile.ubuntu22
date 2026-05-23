@@ -16,6 +16,9 @@
 
 FROM ghcr.io/catthehacker/ubuntu:full-22.04
 
+# The catthehacker base ships USER=runner; apt + rustup need root.
+USER root
+
 ARG DEBIAN_FRONTEND=noninteractive
 ARG GO_VERSION=1.22.6
 ARG RUST_VERSION=stable
