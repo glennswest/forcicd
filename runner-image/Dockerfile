@@ -1,0 +1,122 @@
+# forcicd-runner — act-compatible runner image with the toolchains
+# fastetcd (and siblings) need:
+#
+#   * Rust stable + aarch64 + x86_64 musl targets
+#   * Go (cross-compile-capable; CGO_ENABLED off by default for portability)
+#   * C: gcc, clang, gcc-aarch64-linux-gnu, libc6-dev cross headers
+#   * Kernel build prereqs: make, bc, flex, bison, libssl-dev, libelf-dev,
+#     kmod, cpio, dwarves, rsync — plus headers for the host kernel
+#   * Container plumbing actions need: git, curl, jq, sudo, ca-certificates,
+#     gnupg, lsb-release, software-properties-common
+#   * Docker CLI + buildx + QEMU registration for multi-arch image builds
+#
+# Base is catthehacker/ubuntu:full-22.04 which act_runner / Forgejo Actions
+# treats as a drop-in for GitHub-hosted ubuntu-22.04. Building on the FULL
+# variant means most actions/* run without needing tool-cache misses.
+
+FROM ghcr.io/catthehacker/ubuntu:full-22.04
+
+ARG DEBIAN_FRONTEND=noninteractive
+ARG GO_VERSION=1.22.6
+ARG RUST_VERSION=stable
+
+# ----- C / cross-compile / kernel build prereqs --------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        clang \
+        lld \
+        gcc-aarch64-linux-gnu \
+        g++-aarch64-linux-gnu \
+        libc6-dev-arm64-cross \
+        linux-libc-dev-arm64-cross \
+        crossbuild-essential-arm64 \
+        protobuf-compiler \
+        pkg-config \
+        libssl-dev \
+        libelf-dev \
+        libudev-dev \
+        bc \
+        flex \
+        bison \
+        kmod \
+        cpio \
+        dwarves \
+        rsync \
+        bsdmainutils \
+        dosfstools \
+        device-tree-compiler \
+        u-boot-tools \
+        qemu-user-static \
+        binfmt-support \
+        ca-certificates \
+        curl \
+        wget \
+        git \
+        jq \
+        sudo \
+        gnupg \
+        lsb-release \
+        software-properties-common \
+        unzip \
+        zip \
+        xz-utils \
+        zstd \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- Kernel headers for the host kernel (x86) --------------------
+# Generic 5.x headers — actual driver builds in CI use linux-headers-$(uname -r)
+# but for a runner container the generic package is what's available.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        linux-headers-generic \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- Rust ---------------------------------------------------------
+ENV RUSTUP_HOME=/opt/rust \
+    CARGO_HOME=/opt/cargo \
+    PATH=/opt/cargo/bin:/usr/local/go/bin:${PATH}
+RUN curl -sSf https://sh.rustup.rs | sh -s -- -y --no-modify-path \
+        --default-toolchain ${RUST_VERSION} \
+        --profile minimal \
+    && /opt/cargo/bin/rustup component add rustfmt clippy \
+    && /opt/cargo/bin/rustup target add \
+        aarch64-unknown-linux-gnu \
+        aarch64-unknown-linux-musl \
+        x86_64-unknown-linux-musl \
+    && chmod -R a+rwX /opt/cargo /opt/rust
+
+# Configure cargo to use the aarch64-linux-gnu linker for that target.
+RUN mkdir -p /opt/cargo \
+    && printf '[target.aarch64-unknown-linux-gnu]\nlinker = "aarch64-linux-gnu-gcc"\n[target.aarch64-unknown-linux-musl]\nlinker = "aarch64-linux-gnu-gcc"\n' \
+        > /opt/cargo/config.toml
+
+# ----- Go -----------------------------------------------------------
+RUN ARCH=$(dpkg --print-architecture) \
+    && curl -fsSL "https://go.dev/dl/go${GO_VERSION}.linux-${ARCH}.tar.gz" \
+        | tar -C /usr/local -xz \
+    && go version
+
+# ----- Docker CLI + buildx -----------------------------------------
+# (The host docker socket is mounted in by act_runner; we only need
+# the client + buildx plugin inside.)
+RUN install -m 0755 -d /etc/apt/keyrings \
+    && curl -fsSL https://download.docker.com/linux/ubuntu/gpg \
+        | gpg --dearmor -o /etc/apt/keyrings/docker.gpg \
+    && chmod a+r /etc/apt/keyrings/docker.gpg \
+    && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu $(. /etc/os-release && echo $VERSION_CODENAME) stable" \
+        > /etc/apt/sources.list.d/docker.list \
+    && apt-get update && apt-get install -y --no-install-recommends \
+        docker-ce-cli \
+        docker-buildx-plugin \
+    && rm -rf /var/lib/apt/lists/*
+
+# ----- Sanity check -------------------------------------------------
+RUN rustc --version \
+    && cargo --version \
+    && go version \
+    && gcc --version \
+    && aarch64-linux-gnu-gcc --version \
+    && docker --version \
+    && docker buildx version
+
+# Default workdir for actions/checkout
+WORKDIR /workspace

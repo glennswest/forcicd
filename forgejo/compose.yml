@@ -55,18 +55,24 @@ services:
     restart: unless-stopped
     depends_on:
       - forgejo
-    environment:
-      - FORGEJO_INSTANCE_URL=http://forgejo:3000
-      # `act_runner register` produces this; pre-seeded by
-      # scripts/bootstrap.sh into the runner volume.
-      - FORGEJO_RUNNER_REGISTRATION_FILE=/data/.runner
+    # The image's default CMD is bare `forgejo-runner` (which just
+    # prints --help). `bootstrap.sh` puts /data/.runner in place
+    # first; we just need to launch the daemon against it.
+    working_dir: /data
+    command: ["/bin/forgejo-runner", "daemon"]
     volumes:
       - runner-data:/data
       # The runner launches per-job containers via the host docker
       # daemon. Mounting the socket is the standard act_runner
-      # pattern.
-      - /var/run/docker.sock:/var/run/docker.sock
+      # pattern. `:z` relabels for SELinux (Fedora 43 enforces).
+      - /var/run/docker.sock:/var/run/docker.sock:z
     user: "0:0"
+    # SELinux blocks unprivileged containers from talking to
+    # docker.sock even when the file perms allow it. Disable the
+    # confinement *just* for the runner — it already has root +
+    # the docker socket, so this is no escalation in practice.
+    security_opt:
+      - label=disable
 
 volumes:
   forgejo-data:

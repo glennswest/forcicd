@@ -50,8 +50,13 @@ api() {
 
 # ----- 2 + 3. runner registration token + register --------------
 echo "==> ensure act_runner registered"
-# If the runner already has /data/.runner, it's registered.
-if ssh "${VM_SSH}" "sudo docker exec forgejo-runner test -f /data/.runner" 2>/dev/null; then
+# The runner container's entrypoint expects /data/.runner to exist
+# and crash-loops without it. So we register via a one-shot
+# `docker run` against the same named volume *before* the long-
+# lived runner container can stay up. Detect either case: file
+# already present, or container already happily running.
+ALREADY=$(ssh "${VM_SSH}" "sudo docker volume inspect forcicd_runner-data -f '{{.Mountpoint}}'" 2>/dev/null | tr -d '\r\n')
+if [[ -n "${ALREADY}" ]] && ssh "${VM_SSH}" "sudo test -f '${ALREADY}/.runner'"; then
     echo "    runner already registered"
 else
     # Mint a global (system-scope) runner token.
@@ -60,15 +65,30 @@ else
         echo "failed to generate runner token" >&2
         exit 3
     fi
-    ssh "${VM_SSH}" "sudo docker exec forgejo-runner forgejo-runner register \
-        --no-interactive \
-        --instance http://forgejo:3000 \
-        --token '${TOKEN}' \
-        --name forcicd-runner \
-        --labels 'ubuntu-latest:docker://ghcr.io/catthehacker/ubuntu:act-22.04,ubuntu-22.04:docker://ghcr.io/catthehacker/ubuntu:act-22.04,self-hosted:host'" >/dev/null
-    # Restart runner to pick up the registration.
-    ssh "${VM_SSH}" "sudo docker restart forgejo-runner" >/dev/null
-    echo "    runner registered + restarted"
+    # Runner labels: every github-hosted `runs-on:` value the
+    # fastetcd workflow uses is mapped to our local toolchain image
+    # so cargo / go / cross-compile / kernel-build all just work.
+    # `self-hosted:host` is the escape hatch for jobs that need to
+    # touch the VM's docker / qemu directly.
+    RUNNER_IMAGE="${RUNNER_IMAGE:-${LOCAL_REGISTRY}/forcicd-runner:latest}"
+    # Stop the crash-looping runner so we can write into its volume.
+    ssh "${VM_SSH}" "sudo docker stop forgejo-runner >/dev/null 2>&1 || true"
+    # One-shot register on the shared docker bridge so the runner
+    # can resolve `forgejo:3000`.
+    ssh "${VM_SSH}" "sudo docker run --rm \
+        --network forcicd_default \
+        -v forcicd_runner-data:/data \
+        --user 0:0 \
+        code.forgejo.org/forgejo/runner:6 \
+        forgejo-runner register \
+            --no-interactive \
+            --instance http://forgejo:3000 \
+            --token '${TOKEN}' \
+            --name forcicd-runner \
+            --labels 'ubuntu-latest:docker://${RUNNER_IMAGE},ubuntu-22.04:docker://${RUNNER_IMAGE},ubuntu-24.04:docker://${RUNNER_IMAGE},self-hosted:host'" >/dev/null
+    # Now start the long-lived runner.
+    ssh "${VM_SSH}" "sudo docker start forgejo-runner" >/dev/null
+    echo "    runner registered + started"
 fi
 
 # ----- 4. mirror repo --------------------------------------------
