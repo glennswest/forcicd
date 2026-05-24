@@ -22,7 +22,12 @@ container:
   # forcicd-registry:5000/...`.
   network: forcicd_default
   privileged: false
-  options: ""
+  # Docker's default seccomp profile blocks `io_uring_setup`
+  # (returns EPERM) — that breaks fastetcd-storage's `iouring`
+  # feature tests. Unconfined seccomp lets io_uring syscalls
+  # through. The kernel itself enables io_uring
+  # (`kernel.io_uring_disabled = 0` is the default on Fedora 43).
+  options: "--security-opt seccomp=unconfined"
   valid_volumes: []
   docker_host: ""
   force_pull: false
