@@ -138,7 +138,7 @@ else
         --network forcicd_default \
         -v forcicd_runner-data:/data \
         --user 0:0 \
-        code.forgejo.org/forgejo/runner:6 \
+        code.forgejo.org/forgejo/runner:7 \
         forgejo-runner register \
             --no-interactive \
             --instance http://forgejo:3000 \

@@ -1,0 +1,35 @@
+# forcicd runner config.
+#
+# The critical setting is container.network = forcicd_default —
+# without it the per-job containers run on an isolated bridge
+# network and can't reach forgejo:3000 (so actions/checkout fails
+# with "Could not resolve host: forgejo"). Pointing them at the
+# same compose network as forgejo + registry makes both reachable
+# by service name from inside jobs.
+
+log:
+  level: info
+
+runner:
+  file: /data/.runner
+  capacity: 1
+  timeout: 3h
+
+container:
+  # Attach per-job containers to the same docker network as
+  # forgejo + forcicd-registry so jobs can `git fetch
+  # http://forgejo:3000/...` and `docker pull
+  # forcicd-registry:5000/...`.
+  network: forcicd_default
+  privileged: false
+  options: ""
+  valid_volumes: []
+  docker_host: ""
+  force_pull: false
+  force_rebuild: false
+
+cache:
+  enabled: true
+
+host:
+  workdir_parent: ""

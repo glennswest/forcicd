@@ -50,7 +50,7 @@ services:
       - "3000:3000"
 
   runner:
-    image: code.forgejo.org/forgejo/runner:6
+    image: code.forgejo.org/forgejo/runner:7
     container_name: forgejo-runner
     restart: unless-stopped
     depends_on:
@@ -59,7 +59,9 @@ services:
     # prints --help). `bootstrap.sh` puts /data/.runner in place
     # first; we just need to launch the daemon against it.
     working_dir: /data
-    command: ["/bin/forgejo-runner", "daemon"]
+    # -c /data/config.yaml so per-job containers attach to
+    # forcicd_default and can reach forgejo:3000 by name.
+    command: ["/bin/forgejo-runner", "daemon", "-c", "/data/config.yaml"]
     volumes:
       - runner-data:/data
       # The runner launches per-job containers via the host docker

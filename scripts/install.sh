@@ -10,12 +10,19 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=_lib.sh
 source "${HERE}/_lib.sh"
 
-# Sync the compose file + dashboard build context.
+# Sync the compose file + dashboard build context + runner config.
 scp -q "${REPO_ROOT}/forgejo/compose.yml" "${VM_SSH}:/tmp/compose.yml"
+scp -q "${REPO_ROOT}/forgejo/runner-config.yaml" "${VM_SSH}:/tmp/runner-config.yaml"
 ssh "${VM_SSH}" 'sudo install -d -m 0755 /etc/forcicd/dashboard /var/lib/forcicd && sudo touch /etc/forcicd/admin-password && sudo chmod 0600 /etc/forcicd/admin-password'
 scp -q "${REPO_ROOT}/dashboard/Dockerfile" "${REPO_ROOT}/dashboard/dashboard.py" \
     "${VM_SSH}:/tmp/"
-ssh "${VM_SSH}" 'sudo install -m 0644 /tmp/Dockerfile /etc/forcicd/dashboard/Dockerfile && sudo install -m 0755 /tmp/dashboard.py /etc/forcicd/dashboard/dashboard.py && rm -f /tmp/Dockerfile /tmp/dashboard.py'
+ssh "${VM_SSH}" 'sudo install -m 0644 /tmp/Dockerfile /etc/forcicd/dashboard/Dockerfile && sudo install -m 0755 /tmp/dashboard.py /etc/forcicd/dashboard/dashboard.py && rm -f /tmp/Dockerfile /tmp/dashboard.py
+# Stage runner config into the runner volume (so the runner
+# container picks it up when it starts).
+sudo docker volume create forcicd_runner-data >/dev/null
+V=$(sudo docker volume inspect forcicd_runner-data -f "{{.Mountpoint}}")
+sudo install -m 0644 /tmp/runner-config.yaml "$V/config.yaml"
+rm -f /tmp/runner-config.yaml'
 
 ssh "${VM_SSH}" 'sudo bash -se' <<'REMOTE'
 set -euxo pipefail
