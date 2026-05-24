@@ -36,6 +36,9 @@ struct Policy {
     run_args: Vec<String>,
     log_path: String,
     state_dir: String,
+    // Kubernetes-style pod manifest on the LXC (for `pod up/down`,
+    // i.e. `podman play kube`). "Run a pod inside a Fedora LXC."
+    pod_manifest: String,
 }
 
 impl Policy {
@@ -51,6 +54,7 @@ impl Policy {
             run_args: Vec::new(),
             log_path: "/var/log/forcicd-deploy-gate.log".into(),
             state_dir: "/var/lib/forcicd-deploy".into(),
+            pod_manifest: "/etc/forcicd-deploy/pod.yaml".into(),
         };
         if let Ok(txt) = fs::read_to_string(CONF) {
             for line in txt.lines() {
@@ -66,6 +70,7 @@ impl Policy {
                     "container_name" => p.container_name = v.into(),
                     "log_path" => p.log_path = v.into(),
                     "state_dir" => p.state_dir = v.into(),
+                    "pod_manifest" => p.pod_manifest = v.into(),
                     "allowed_registries" => {
                         p.allowed_registries =
                             v.split_whitespace().map(str::to_string).collect()
@@ -215,6 +220,26 @@ fn ps(p: &Policy) -> i32 {
     run(&p.engine, &["ps", "--format", "{{.Names}} {{.Status}} {{.Image}}"])
 }
 
+/// Run a Kubernetes-style pod inside this LXC via `podman play
+/// kube`, from the manifest the policy points at. `pod up` (re)plays
+/// it; `pod down` tears it down. The manifest lives on the LXC so a
+/// deploy key can't smuggle arbitrary pod specs.
+fn pod(p: &Policy, sub: &str) -> i32 {
+    if !std::path::Path::new(&p.pod_manifest).exists() {
+        eprintln!("cigate: no pod manifest at {}", p.pod_manifest);
+        return 2;
+    }
+    p.log(&format!("pod {sub} {}", p.pod_manifest));
+    match sub {
+        "up" | "" => run(&p.engine, &["play", "kube", "--replace", &p.pod_manifest]),
+        "down" => run(&p.engine, &["play", "kube", "--down", &p.pod_manifest]),
+        other => {
+            eprintln!("cigate: pod takes up|down, got '{other}'");
+            2
+        }
+    }
+}
+
 fn help() -> i32 {
     println!(
         "cigate — forcicd deploy gate (only these verbs):\n\
@@ -225,6 +250,8 @@ fn help() -> i32 {
          \x20 status               show the app container's state\n\
          \x20 logs [N]             tail N (default 100) lines of app logs\n\
          \x20 ps                   list running containers\n\
+         \x20 pod up|down          run a pod (podman play kube) from the\n\
+         \x20                      policy manifest, inside this LXC\n\
          \x20 help                 this text\n"
     );
     0
@@ -247,6 +274,7 @@ fn dispatch(p: &Policy, tokens: &[String]) -> i32 {
         "status" => status(p),
         "logs" => logs(p, tokens.get(1).map(String::as_str).unwrap_or("100")),
         "ps" => ps(p),
+        "pod" => pod(p, tokens.get(1).map(String::as_str).unwrap_or("up")),
         "help" | "-h" | "--help" => help(),
         other => {
             eprintln!("cigate: unknown verb '{other}' (try: help)");

@@ -20,3 +20,10 @@ run_args = -p 5000:5000 -v /data/registry:/var/lib/registry
 # Where cigate logs + records current/previous image for rollback.
 log_path = /var/log/forcicd-deploy-gate.log
 state_dir = /var/lib/forcicd-deploy
+
+# To run a multi-container POD inside this LXC (podman play kube),
+# drop a Kubernetes-style manifest here and use `cigate pod up` /
+# `pod down`. The manifest lives on the LXC (a deploy key can't
+# smuggle arbitrary pod specs). Prepare the LXC for pods with
+# scripts/prepare-lxc-pod-host.sh.
+pod_manifest = /etc/forcicd-deploy/pod.yaml
