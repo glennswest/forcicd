@@ -34,7 +34,10 @@ container:
   #    fails), so `podman build` / `pod` work in CI. Acceptable on
   #    this single-tenant trusted-LAN runner.
   #  --device /dev/fuse : fuse-overlayfs for nested overlay storage.
-  options: "--privileged --security-opt seccomp=unconfined --device /dev/fuse"
+  #  -e XDG_RUNTIME_DIR= : let podman compute its runtime dir from
+  #    the actual job uid instead of a baked one that may be owned
+  #    by a different user ("XDG_RUNTIME_DIR not owned" otherwise).
+  options: "--privileged --security-opt seccomp=unconfined --device /dev/fuse -e XDG_RUNTIME_DIR="
   valid_volumes: []
   docker_host: ""
   force_pull: false
