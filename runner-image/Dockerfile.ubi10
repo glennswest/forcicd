@@ -23,7 +23,7 @@ RUN dnf install -y --allowerasing --setopt=install_weak_deps=False \
         git curl wget jq sudo which gnupg2 \
         ca-certificates \
         python3 python3-pip \
-        skopeo buildah podman \
+        skopeo buildah podman fuse-overlayfs \
     && dnf clean all
 
 ENV RUSTUP_HOME=/opt/rust \
@@ -55,5 +55,12 @@ RUN rustc --version \
     && go version \
     && gcc --version \
     && docker --version
+
+
+# Rootless container builds inside the runner: nested overlay needs
+# fuse-overlayfs as the mount_program (jobs run on overlayfs).
+RUN mkdir -p /etc/containers && \
+    printf '[storage]\ndriver = "overlay"\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' > /etc/containers/storage.conf && \
+    printf 'unqualified-search-registries = ["docker.io"]\n[[registry]]\nlocation = "forcicd.g8.lo:5000"\ninsecure = true\n[[registry]]\nlocation = "fastregistry.g10.lo"\ninsecure = true\n' > /etc/containers/registries.conf
 
 WORKDIR /workspace
