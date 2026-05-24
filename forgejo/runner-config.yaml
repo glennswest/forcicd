@@ -37,7 +37,11 @@ container:
   #  -e XDG_RUNTIME_DIR= : let podman compute its runtime dir from
   #    the actual job uid instead of a baked one that may be owned
   #    by a different user ("XDG_RUNTIME_DIR not owned" otherwise).
-  options: "--privileged --security-opt seccomp=unconfined --device /dev/fuse -e XDG_RUNTIME_DIR="
+  #  -e BUILDAH_ISOLATION=chroot : podman/buildah `RUN` steps run via
+  #    chroot, not a nested container runtime — avoids crun failing
+  #    to mount /dev/pts or write cgroups one level too deep
+  #    (docker -> job container -> podman build -> RUN).
+  options: "--privileged --security-opt seccomp=unconfined --device /dev/fuse -e XDG_RUNTIME_DIR= -e BUILDAH_ISOLATION=chroot"
   valid_volumes: []
   docker_host: ""
   force_pull: false
