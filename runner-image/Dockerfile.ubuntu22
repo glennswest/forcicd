@@ -64,7 +64,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         zip \
         xz-utils \
         zstd \
+        podman \
+        buildah \
+        skopeo \
+        fuse-overlayfs \
+        uidmap \
     && rm -rf /var/lib/apt/lists/*
+
+# ----- rootless container builds inside the runner ----------------
+# Jobs run inside a container that's already on overlayfs, so
+# podman/buildah's default `overlay` driver fails ("not supported
+# over overlayfs"). fuse-overlayfs as the mount_program makes
+# nested overlay work — so `podman build` / `buildah bud` succeed
+# without privileged mode or a docker daemon. (Closes the
+# container-builder gap; qregistry et al. build images in CI.)
+RUN mkdir -p /etc/containers && \
+    printf '[storage]\ndriver = "overlay"\nrunroot = "/run/containers/storage"\ngraphroot = "/var/lib/containers/storage"\n[storage.options.overlay]\nmount_program = "/usr/bin/fuse-overlayfs"\n' \
+        > /etc/containers/storage.conf && \
+    printf 'unqualified-search-registries = ["docker.io"]\n[[registry]]\nlocation = "forcicd.g8.lo:5000"\ninsecure = true\n[[registry]]\nlocation = "fastregistry.g10.lo"\ninsecure = true\n' \
+        > /etc/containers/registries.conf
 
 # ----- Kernel headers for the host kernel (x86) --------------------
 # Generic 5.x headers — actual driver builds in CI use linux-headers-$(uname -r)
