@@ -25,12 +25,16 @@ container:
   # forcicd-registry:5000/...`.
   network: forcicd_default
   privileged: false
-  # Docker's default seccomp profile blocks `io_uring_setup`
-  # (returns EPERM) — that breaks fastetcd-storage's `iouring`
-  # feature tests. Unconfined seccomp lets io_uring syscalls
-  # through. The kernel itself enables io_uring
-  # (`kernel.io_uring_disabled = 0` is the default on Fedora 43).
-  options: "--security-opt seccomp=unconfined"
+  # Per-job container options:
+  #  --security-opt seccomp=unconfined : lets io_uring_setup through
+  #    (Docker's default seccomp blocks it; fastetcd's `iouring`
+  #    tests need it. Kernel has io_uring_disabled=0 on Fedora 43).
+  #  --privileged : lets rootless podman/buildah create nested user
+  #    namespaces inside the job container (newuidmap otherwise
+  #    fails), so `podman build` / `pod` work in CI. Acceptable on
+  #    this single-tenant trusted-LAN runner.
+  #  --device /dev/fuse : fuse-overlayfs for nested overlay storage.
+  options: "--privileged --security-opt seccomp=unconfined --device /dev/fuse"
   valid_volumes: []
   docker_host: ""
   force_pull: false
