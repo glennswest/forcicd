@@ -20,7 +20,7 @@ ck() {
 }
 
 echo "==> infra"
-ck "DNS resolves ${VM_NAME}"          getent ahosts "${VM_NAME}"
+ck "DNS resolves ${VM_NAME}"          bash -c "getent ahosts '${VM_NAME}' 2>/dev/null || host '${VM_NAME}' 2>/dev/null || dscacheutil -q host -a name '${VM_NAME}' 2>/dev/null | grep -q ip_address"
 ck "VM ${VMID} exists on PVE"         vm_exists
 ck "SSH reachable on the VM"          ssh -o ConnectTimeout=3 -o BatchMode=yes "${VM_SSH}" 'echo ok'
 ck "Docker daemon running on the VM"  ssh "${VM_SSH}" 'sudo docker info >/dev/null 2>&1'
