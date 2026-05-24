@@ -312,10 +312,13 @@ def forgejo_local_ci() -> dict[str, dict]:
             ) or {}
             run = (tasks.get("workflow_runs") or [None])[0]
             if run:
+                # The Forgejo UI addresses runs by their per-repo
+                # `run_number` (the /actions/runs/<n> path), NOT the
+                # global `id`. Using id 404s.
                 out[name] = {
                     "local_status": run.get("status"),
                     "local_sha": (run.get("head_sha") or "")[:7],
-                    "local_url": f"http://forcicd.g8.lo:3000/{full}/actions/runs/{run.get('id')}",
+                    "local_url": f"http://forcicd.g8.lo:3000/{full}/actions/runs/{run.get('run_number')}",
                 }
             else:
                 out[name] = {"local_status": None, "local_sha": None,
@@ -424,7 +427,7 @@ a:hover { text-decoration: underline; }
   <nav>
     <a href="/" class="active">overview</a>
     <a href="/local">local CI</a>
-    <a href="http://forcicd.g8.lo:3000" target="_blank">forgejo</a>
+    <a href="http://forcicd.g8.lo:3000">forgejo</a>
   </nav>
 </header>
 <p class="subtitle" id="subtitle">loading…</p>
@@ -466,26 +469,26 @@ function pill(text, cls) {
 }
 function ciCell(r) {
   if (r.ci_status === "queued" || r.ci_status === "in_progress")
-    return `<a href="${r.ci_url||'#'}" target="_blank">${pill(r.ci_status, 'warn')}</a>`;
-  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('passing','ok')}</a>`;
-  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('failing','bad')}</a>`;
-  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('cancelled','dim')}</a>`;
+    return `<a href="${r.ci_url||'#'}">${pill(r.ci_status, 'warn')}</a>`;
+  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}">${pill('passing','ok')}</a>`;
+  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}">${pill('failing','bad')}</a>`;
+  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}">${pill('cancelled','dim')}</a>`;
   if (r.ci_conclusion === null && r.ci_status === null) return `<span class="dim">no ci</span>`;
-  return `<a href="${r.ci_url||'#'}" target="_blank">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
+  return `<a href="${r.ci_url||'#'}">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
 }
 // forcicd-local build status. Click → the Forgejo run log.
 function localCell(r) {
   if (!r.mirrored) return `<span class="dim">—</span>`;
   const u = r.local_url || '#';
   if (r.local_status === null)
-    return `<a href="${u}" target="_blank">${pill('pending','dim')}</a>`;
+    return `<a href="${u}">${pill('pending','dim')}</a>`;
   if (r.local_status === "success")
-    return `<a href="${u}" target="_blank">${pill('built ✓','ok')}</a>`;
+    return `<a href="${u}">${pill('built ✓','ok')}</a>`;
   if (r.local_status === "failure")
-    return `<a href="${u}" target="_blank">${pill('built ✗','bad')}</a>`;
+    return `<a href="${u}">${pill('built ✗','bad')}</a>`;
   if (r.local_status === "running" || r.local_status === "waiting")
-    return `<a href="${u}" target="_blank">${pill(r.local_status,'warn')}</a>`;
-  return `<a href="${u}" target="_blank">${pill(r.local_status||'?','dim')}</a>`;
+    return `<a href="${u}">${pill(r.local_status,'warn')}</a>`;
+  return `<a href="${u}">${pill(r.local_status||'?','dim')}</a>`;
 }
 function flagCell(r) {
   let f = [];
@@ -542,11 +545,11 @@ function render() {
   const showGhCol = document.getElementById('showgh').checked;
   document.getElementById('rows').innerHTML = rows.map(r => `
     <tr>
-      <td><a href="${r.html_url}" target="_blank">${r.full_name}</a></td>
+      <td><a href="${r.html_url}">${r.full_name}</a></td>
       <td>${localCell(r)}</td>
       <td class="ghcol" style="display:${showGhCol?'':'none'}">${ciCell(r)}</td>
-      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls" target="_blank">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
-      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues" target="_blank">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
       <td class="dim">${ago(r.pushed_at)}</td>
       <td>${flagCell(r)}</td>
     </tr>`).join('');
@@ -615,7 +618,7 @@ a { color: #58a6ff; }
   <nav>
     <a href="/">overview</a>
     <a href="/local" class="active">local CI</a>
-    <a href="http://forcicd.g8.lo:3000" target="_blank">forgejo</a>
+    <a href="http://forcicd.g8.lo:3000">forgejo</a>
   </nav>
 </header>
 <p class="subtitle">VM/containers/runner/mirror/CD on forcicd.g8.lo · auto-refresh 5s</p>
