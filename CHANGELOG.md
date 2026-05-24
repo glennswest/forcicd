@@ -2,6 +2,32 @@
 
 ## [Unreleased]
 
+### 2026-05-24
+- **feat:** Multi-project overview dashboard (`:8090/`) across all
+  owned GitHub repos — CI status, open PRs/issues, last-push age,
+  sortable + filterable. forcicd-internal view moved to `/local`.
+- **feat:** `scripts/bulk-mirror.sh` — mirror many GitHub repos
+  into Forgejo at once (`--active [DAYS]` discovers them via the
+  VM's GitHub token).
+- **feat:** `scripts/set-gh-secret.sh` — register the GitHub push
+  token as a Forgejo Actions secret (`GH_PUSH_TOKEN`) so workflow
+  jobs can push commits / cut releases back to GitHub.
+- **feat:** GitHub token stored on the VM at
+  `/etc/forcicd/github-token` (0600 root), mounted read-only into
+  the dashboard.
+- **docs:** `docs/02-usage.md` — dashboards, adding projects,
+  CI-push-back / release pattern, CD, roadmap.
+- **fix:** CD watcher uses `/actions/tasks` (not `/runs`, which
+  404s in Forgejo 9) and gates on "all `test (ubuntu-*)` green for
+  a SHA" instead of the upstream build job (which never runs here
+  because its `needs: [test]` waits on always-cancelled macos
+  matrix entries). CD watcher enabled via `scripts/install-cd.sh`.
+- **fix:** Local CI verified end-to-end — runner upgraded to
+  forgejo/runner:7, per-job containers join `forcicd_default`
+  (resolve `forgejo:3000`) and get `--security-opt
+  seccomp=unconfined` (io_uring). All 3 ubuntu test-matrix jobs
+  pass green for fastetcd.
+
 ## [v0.1.0] — 2026-05-23
 
 First operational cut. Goes from "scaffolding" → "Forgejo + runner
