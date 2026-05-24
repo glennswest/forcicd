@@ -144,6 +144,19 @@ def file_issue(name, info):
     sha7 = sha[:7]
     key = f"{name}@{sha}"
 
+    # Claim the key up front (before any slow GitHub call) so a
+    # concurrent run — e.g. a manual invocation racing the timer —
+    # can't file a second issue for the same commit. We re-read and
+    # CAS via O_EXCL on a per-key lock file.
+    lockdir = os.path.dirname(STATE_FILE)
+    os.makedirs(lockdir, exist_ok=True)
+    lock = os.path.join(lockdir, ".lock-" + key.replace("/", "_"))
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        os.close(fd)
+    except FileExistsError:
+        return f"  = {name}@{sha7} (another worker is handling it)"
+
     if existing_issue(repo_full, sha7):
         append_state(key)  # record so we stop re-checking
         return f"  = {name}@{sha7} (issue already open)"

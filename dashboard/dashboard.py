@@ -48,6 +48,9 @@ GH_AFFILIATION = os.environ.get("GH_AFFILIATION", "owner")
 # Cache GitHub responses for 60s — we have rate limits and a lot of
 # repos. The UI refresh is 15s; the cache cushion absorbs that.
 GH_CACHE_SECS = int(os.environ.get("GH_CACHE_SECS", "60"))
+# Label the failure-watcher uses; the issues grid flags these as
+# auto-fix candidates.
+LABEL_CI_FAILURE = os.environ.get("CI_FAILURE_LABEL", "ci-failure")
 
 
 # ============================================================
@@ -278,12 +281,15 @@ def gh_repo_status(full_name: str, default_branch: str) -> dict:
             out["ci_conclusion"] = r.get("conclusion")
             out["ci_url"] = r.get("html_url")
             out["ci_started_at"] = r.get("run_started_at")
-    # Open PR count (search API gives just a total).
+    # Open PR count via REST (the /search API has a 30/min limit
+    # that the fan-out blows through; REST is 5000/hr). We ask for
+    # one page of open PRs with a big per_page and count locally —
+    # cheap and avoids search entirely.
     status, body, _ = gh_request(
-        f"/search/issues?q=repo:{quote(full_name)}+is:pr+is:open&per_page=1"
+        f"/repos/{quote(full_name, safe='/')}/pulls?state=open&per_page=100"
     )
-    if status == 200 and body:
-        out["pr_count"] = body.get("total_count", 0)
+    if status == 200 and isinstance(body, list):
+        out["pr_count"] = len(body)
     return out
 
 
@@ -377,6 +383,63 @@ def overview() -> dict:
     return cached("overview", GH_CACHE_SECS, build)
 
 
+def _repo_open_issues(full_name: str) -> list[dict]:
+    """Open issues (not PRs) for one repo via REST."""
+    rows = []
+    status, body, _ = gh_request(
+        f"/repos/{quote(full_name, safe='/')}/issues"
+        f"?state=open&sort=updated&direction=desc&per_page=50"
+    )
+    if status != 200 or not isinstance(body, list):
+        return rows
+    for it in body:
+        if it.get("pull_request"):      # the issues endpoint includes PRs
+            continue
+        labels = [l.get("name") for l in (it.get("labels") or [])]
+        rows.append({
+            "repo": full_name,
+            "number": it.get("number"),
+            "title": it.get("title"),
+            "labels": labels,
+            "is_ci_failure": LABEL_CI_FAILURE in labels,
+            "comments": it.get("comments", 0),
+            "updated_at": it.get("updated_at"),
+            "created_at": it.get("created_at"),
+            "html_url": it.get("html_url"),
+            "state": it.get("state"),
+        })
+    return rows
+
+
+def issues() -> dict:
+    """All open issues across active owned repos, newest first.
+    Uses the REST issues endpoint per repo (5000/hr) rather than the
+    /search API (30/min) so the fan-out doesn't hit the rate limit."""
+    def build():
+        repos = gh_active_repos()
+        rows = []
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = [ex.submit(_repo_open_issues, r["full_name"]) for r in repos]
+            for fut in as_completed(futures):
+                try:
+                    rows.extend(fut.result())
+                except Exception:
+                    pass
+        rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+        summary = {
+            "total": len(rows),
+            "ci_failures": sum(1 for r in rows if r["is_ci_failure"]),
+            "repos": len({r["repo"] for r in rows}),
+        }
+        return {
+            "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "auth_ok": bool(gh_token()),
+            "summary": summary,
+            "rows": rows,
+        }
+    return cached("issues", GH_CACHE_SECS, build)
+
+
 # ============================================================
 # HTML
 # ============================================================
@@ -426,6 +489,7 @@ a:hover { text-decoration: underline; }
   <h1>forcicd — overview</h1>
   <nav>
     <a href="/" class="active">overview</a>
+    <a href="/issues">issues</a>
     <a href="/local">local CI</a>
     <a href="http://forcicd.g8.lo:3000">forgejo</a>
   </nav>
@@ -617,6 +681,7 @@ a { color: #58a6ff; }
   <h1>forcicd — local CI</h1>
   <nav>
     <a href="/">overview</a>
+    <a href="/issues">issues</a>
     <a href="/local" class="active">local CI</a>
     <a href="http://forcicd.g8.lo:3000">forgejo</a>
   </nav>
@@ -677,6 +742,160 @@ setInterval(tick, 5000);
 """
 
 
+ISSUES_PAGE = """<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>forcicd — issues</title>
+<style>
+:root { color-scheme: dark; }
+body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+       background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px;
+       max-width: 1400px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: baseline;
+         margin-bottom: 16px; }
+h1 { font-size: 18px; margin: 0; }
+nav a { color: #58a6ff; margin-left: 12px; }
+nav a.active { color: #c9d1d9; }
+.subtitle { color: #8b949e; font-size: 12px; margin: 0 0 16px 0; }
+.grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: 16px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px; padding: 10px 14px; }
+.card .label { color: #8b949e; font-size: 10px; text-transform: uppercase; }
+.card .value { font-size: 22px; font-family: ui-monospace, monospace; }
+.bad { color: #f85149; } .ok { color: #3fb950; } .dim { color: #8b949e; }
+table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; vertical-align: top; }
+th { color: #8b949e; font-weight: normal; font-size: 11px; text-transform: uppercase; cursor: pointer; }
+a { color: #58a6ff; text-decoration: none; } a:hover { text-decoration: underline; }
+.search { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+          padding: 4px 8px; border-radius: 4px; font: inherit; width: 240px; }
+.controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+.lbl { background: #21262d; border-radius: 10px; padding: 1px 7px; font-size: 11px; margin-right: 3px; }
+.lbl.cifail { background: rgba(248,81,73,0.18); color: #f85149; }
+.btn { background: #238636; color: #fff; border: 0; border-radius: 5px;
+       padding: 4px 10px; font: inherit; cursor: pointer; }
+.btn:hover { background: #2ea043; }
+.btn:disabled { background: #30363d; color: #8b949e; cursor: default; }
+.foot { color: #6e7681; font-size: 11px; margin-top: 24px; text-align: center; }
+</style></head>
+<body>
+<header>
+  <h1>forcicd — issues</h1>
+  <nav>
+    <a href="/">overview</a>
+    <a href="/issues" class="active">issues</a>
+    <a href="/local">local CI</a>
+    <a href="http://forcicd.g8.lo:3000">forgejo</a>
+  </nav>
+</header>
+<p class="subtitle" id="subtitle">loading…</p>
+<div class="grid" id="summary"></div>
+<div class="controls">
+  <input class="search" id="filter" placeholder="filter (repo / title / label)…">
+  <label class="dim" style="cursor:pointer"><input type="checkbox" id="cionly"> ci-failures only</label>
+  <span class="dim" id="resultcount"></span>
+</div>
+<table id="t">
+  <thead><tr>
+    <th data-k="repo">repo</th>
+    <th data-k="number">#</th>
+    <th data-k="title">title</th>
+    <th>labels</th>
+    <th data-k="updated_at">updated</th>
+    <th>action</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+<p class="foot">refreshes every 30s · last: <span id="now">—</span></p>
+<script>
+let DATA = {rows: [], summary: {}};
+let SORT = {k: "updated_at", desc: true};
+function ago(iso){ if(!iso) return '—'; const m=Math.floor((Date.now()-new Date(iso))/60000);
+  const h=Math.floor(m/60), d=Math.floor(h/24);
+  return d>0?`${d}d`:h>0?`${h}h`:m>0?`${m}m`:'now'; }
+function labelsCell(r){
+  return (r.labels||[]).map(l =>
+    `<span class="lbl ${l===DATA.ci_label?'cifail':''}">${l}</span>`).join('');
+}
+async function fix(repo, number, btn){
+  btn.disabled = true; btn.textContent = 'launching…';
+  try {
+    const res = await fetch('/fix', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({repo, number})});
+    const j = await res.json();
+    if (j.ok) { btn.textContent = 'worker: ' + (j.session||'started'); }
+    else { btn.textContent = 'failed'; btn.disabled = false; alert(j.error||'launch failed'); }
+  } catch(e) { btn.textContent='error'; btn.disabled=false; }
+}
+function render(){
+  const s = DATA.summary;
+  document.getElementById('summary').innerHTML = `
+    <div class="card"><div class="label">open issues</div><div class="value">${s.total||0}</div></div>
+    <div class="card"><div class="label">ci-failures</div><div class="value bad">${s.ci_failures||0}</div></div>
+    <div class="card"><div class="label">repos</div><div class="value">${s.repos||0}</div></div>`;
+  const q = document.getElementById('filter').value.toLowerCase();
+  const ciOnly = document.getElementById('cionly').checked;
+  let rows = DATA.rows.filter(r =>
+    (!ciOnly || r.is_ci_failure) &&
+    (!q || (r.repo||'').toLowerCase().includes(q)
+        || (r.title||'').toLowerCase().includes(q)
+        || (r.labels||[]).join(' ').toLowerCase().includes(q)));
+  rows.sort((a,b)=>{const x=a[SORT.k]??'',y=b[SORT.k]??'';
+    return (x<y?1:x>y?-1:0)*(SORT.desc?1:-1);});
+  document.getElementById('resultcount').textContent =
+    rows.length===DATA.rows.length?`${rows.length} issues`:`${rows.length} of ${DATA.rows.length}`;
+  document.getElementById('rows').innerHTML = rows.map(r => `
+    <tr>
+      <td><a href="https://github.com/${r.repo}/issues">${r.repo}</a></td>
+      <td><a href="${r.html_url}">#${r.number}</a></td>
+      <td><a href="${r.html_url}">${(r.title||'').replace(/</g,'&lt;')}</a></td>
+      <td>${labelsCell(r)}</td>
+      <td class="dim">${ago(r.updated_at)}</td>
+      <td>${r.is_ci_failure
+        ? `<button class="btn" onclick="fix('${r.repo}',${r.number},this)">▶ auto-fix</button>`
+        : '<span class="dim">—</span>'}</td>
+    </tr>`).join('');
+  document.getElementById('subtitle').textContent = DATA.auth_ok
+    ? 'open issues across your repos · ci-failures get a one-click Claude auto-fix worker'
+    : 'NO GH TOKEN on the VM';
+}
+async function tick(){
+  try { const d = await (await fetch('/issues.json')).json();
+    DATA = d; document.getElementById('now').textContent = d.now; render();
+  } catch(e){}
+}
+document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
+  const k = th.dataset.k; SORT = (SORT.k===k)?{k,desc:!SORT.desc}:{k,desc:true}; render();
+});
+document.getElementById('filter').oninput = render;
+document.getElementById('cionly').onchange = render;
+tick(); setInterval(tick, 30000);
+</script>
+</body></html>
+"""
+
+
+def launch_fix_worker(repo: str, number: int) -> dict:
+    """Kick off the agent worker for repo#number. Delegates to the
+    host helper /opt/forcicd/fix-worker.sh via the docker socket is
+    overkill; instead the dashboard writes a request file that the
+    host-side fix-dispatcher picks up. Keeps the dashboard container
+    from needing pct/screen access."""
+    import re
+    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") or not isinstance(number, int):
+        return {"ok": False, "error": "bad repo/number"}
+    reqdir = os.environ.get("FIX_REQ_DIR", "/var/lib/forcicd/fix-requests")
+    try:
+        os.makedirs(reqdir, exist_ok=True)
+        session = f"fix-{repo.split('/')[-1]}-{number}"
+        req = os.path.join(reqdir, f"{session}.json")
+        with open(req, "w") as f:
+            json.dump({"repo": repo, "number": number, "session": session,
+                       "requested_at": datetime.now(timezone.utc).isoformat()}, f)
+        return {"ok": True, "session": session}
+    except OSError as e:
+        return {"ok": False, "error": str(e)}
+
+
 class Handler(http.server.BaseHTTPRequestHandler):
     def _send(self, body: bytes, ct: str, status: int = 200):
         self.send_response(status)
@@ -688,14 +907,34 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):  # noqa: N802
         if self.path in ("/", "/index.html", "/overview"):
             self._send(OVERVIEW_PAGE.encode(), "text/html; charset=utf-8")
+        elif self.path == "/issues":
+            self._send(ISSUES_PAGE.encode(), "text/html; charset=utf-8")
         elif self.path == "/local":
             self._send(LOCAL_PAGE.encode(), "text/html; charset=utf-8")
         elif self.path == "/overview.json":
             self._send(json.dumps(overview()).encode(), "application/json")
+        elif self.path == "/issues.json":
+            data = issues()
+            data["ci_label"] = LABEL_CI_FAILURE
+            self._send(json.dumps(data).encode(), "application/json")
         elif self.path in ("/state.json", "/local.json"):
             self._send(json.dumps(local_state()).encode(), "application/json")
         elif self.path == "/healthz":
             self._send(b"ok", "text/plain")
+        else:
+            self.send_response(404); self.end_headers()
+
+    def do_POST(self):  # noqa: N802
+        if self.path == "/fix":
+            length = int(self.headers.get("Content-Length", "0"))
+            try:
+                payload = json.loads(self.rfile.read(length) or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            result = launch_fix_worker(payload.get("repo", ""),
+                                       payload.get("number"))
+            code = 200 if result.get("ok") else 400
+            self._send(json.dumps(result).encode(), "application/json", code)
         else:
             self.send_response(404); self.end_headers()
 

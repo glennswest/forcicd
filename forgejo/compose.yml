@@ -111,7 +111,9 @@ services:
     volumes:
       - /etc/forcicd/admin-password:/etc/forcicd/admin-password:ro
       - /etc/forcicd/github-token:/etc/forcicd/github-token:ro
-      - /var/lib/forcicd:/var/lib/forcicd:ro
+      # rw so the /fix button can drop request files the host-side
+      # dispatcher picks up. (last-deployed state also lives here.)
+      - /var/lib/forcicd:/var/lib/forcicd
       - /var/run/docker.sock:/var/run/docker.sock:ro,z
     security_opt:
       - label=disable
