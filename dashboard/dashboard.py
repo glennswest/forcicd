@@ -45,9 +45,14 @@ GH_ACTIVE_DAYS = int(os.environ.get("GH_ACTIVE_DAYS", "30"))
 # membership). Set to "owner,collaborator,organization_member"
 # to widen.
 GH_AFFILIATION = os.environ.get("GH_AFFILIATION", "owner")
-# Cache GitHub responses for 60s — we have rate limits and a lot of
-# repos. The UI refresh is 15s; the cache cushion absorbs that.
-GH_CACHE_SECS = int(os.environ.get("GH_CACHE_SECS", "60"))
+# Cache GitHub responses — across ~50 repos the per-repo fan-out is
+# heavy, and GitHub's secondary (abuse) limit trips on bursts of
+# concurrent requests. 300s keeps us well under budget; the UI
+# still refreshes from cache every 15s.
+GH_CACHE_SECS = int(os.environ.get("GH_CACHE_SECS", "300"))
+# Max concurrent GitHub requests in a fan-out. Low to avoid the
+# secondary rate limit (it watches concurrency, not just volume).
+GH_FANOUT = int(os.environ.get("GH_FANOUT", "3"))
 # Label the failure-watcher uses; the issues grid flags these as
 # auto-fix candidates.
 LABEL_CI_FAILURE = os.environ.get("CI_FAILURE_LABEL", "ci-failure")
@@ -335,109 +340,181 @@ def forgejo_local_ci() -> dict[str, dict]:
     return out
 
 
+# ============================================================
+# LOCAL data model — no GitHub polling. The overview is built from
+# Forgejo (mirrors + local CI, all on-LAN/unlimited); issues come
+# from a local store that the failure watcher writes and GitHub
+# webhooks update (push model, not polling).
+# ============================================================
+
+ISSUE_STORE = os.environ.get("ISSUE_STORE", "/var/lib/forcicd/issues.json")
+_store_lock = threading.Lock()
+
+
+def load_issue_store() -> dict:
+    try:
+        with open(ISSUE_STORE) as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def save_issue_store(store: dict) -> None:
+    tmp = f"{ISSUE_STORE}.tmp"
+    with _store_lock:
+        try:
+            with open(tmp, "w") as f:
+                json.dump(store, f)
+            os.replace(tmp, ISSUE_STORE)
+        except OSError:
+            pass
+
+
+def upsert_issue(rec: dict) -> None:
+    """Merge one issue record (keyed repo#number) into the store."""
+    key = f'{rec.get("repo")}#{rec.get("number")}'
+    with _store_lock:
+        try:
+            with open(ISSUE_STORE) as f:
+                store = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            store = {}
+        store[key] = {**store.get(key, {}), **rec}
+        tmp = f"{ISSUE_STORE}.tmp"
+        try:
+            with open(tmp, "w") as f:
+                json.dump(store, f)
+            os.replace(tmp, ISSUE_STORE)
+        except OSError:
+            pass
+
+
 def overview() -> dict:
-    def build():
-        repos = gh_active_repos()
-        local = forgejo_local_ci()
-        # Fan out repo-detail calls in parallel; GitHub rate limit is
-        # 5k req/h for an authed user, plenty of headroom for ~100 repos.
-        rows = []
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futures = {
-                ex.submit(gh_repo_status, r["full_name"], r["default_branch"]): r
-                for r in repos
-            }
-            for fut in as_completed(futures):
-                r = futures[fut]
-                try:
-                    detail = fut.result()
-                except Exception:
-                    detail = {}
-                # Join local forcicd build status by bare repo name.
-                loc = local.get(r["name"], {})
-                rows.append({**r, **detail, **loc,
-                             "mirrored": r["name"] in local})
-        # Sort newest-pushed first.
-        rows.sort(key=lambda r: r.get("pushed_at") or "", reverse=True)
-
-        # Summary counts for the header.
-        summary = {
-            "total_active": len(rows),
-            "ci_running": sum(1 for r in rows if r.get("ci_status") in ("queued", "in_progress")),
-            "ci_failing": sum(1 for r in rows if r.get("ci_conclusion") == "failure"),
-            "ci_passing": sum(1 for r in rows if r.get("ci_conclusion") == "success"),
-            "mirrored": sum(1 for r in rows if r.get("mirrored")),
-            "local_failing": sum(1 for r in rows if r.get("local_status") == "failure"),
-            "local_passing": sum(1 for r in rows if r.get("local_status") == "success"),
-            "open_prs": sum(r.get("pr_count", 0) for r in rows),
-            "open_issues": sum(r.get("open_issues_count", 0) for r in rows),
-        }
-        return {
-            "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "auth_ok": bool(gh_token()),
-            "active_days": GH_ACTIVE_DAYS,
-            "summary": summary,
-            "rows": rows,
-        }
-
-    return cached("overview", GH_CACHE_SECS, build)
-
-
-def _repo_open_issues(full_name: str) -> list[dict]:
-    """Open issues (not PRs) for one repo via REST."""
+    """Local-only: every Forgejo mirror + its latest local CI run.
+    No GitHub calls."""
+    local = forgejo_local_ci()                 # name -> {local_status,...}
     rows = []
-    status, body, _ = gh_request(
-        f"/repos/{quote(full_name, safe='/')}/issues"
-        f"?state=open&sort=updated&direction=desc&per_page=50"
-    )
-    if status != 200 or not isinstance(body, list):
-        return rows
-    for it in body:
-        if it.get("pull_request"):      # the issues endpoint includes PRs
-            continue
-        labels = [l.get("name") for l in (it.get("labels") or [])]
-        rows.append({
-            "repo": full_name,
-            "number": it.get("number"),
-            "title": it.get("title"),
-            "labels": labels,
-            "is_ci_failure": LABEL_CI_FAILURE in labels,
-            "comments": it.get("comments", 0),
-            "updated_at": it.get("updated_at"),
-            "created_at": it.get("created_at"),
-            "html_url": it.get("html_url"),
-            "state": it.get("state"),
-        })
-    return rows
+    for name, loc in local.items():
+        rows.append({"name": name, "mirrored": True, **loc})
+    rows.sort(key=lambda r: r.get("name") or "")
+    summary = {
+        "mirrored": len(rows),
+        "local_passing": sum(1 for r in rows if r.get("local_status") == "success"),
+        "local_failing": sum(1 for r in rows if r.get("local_status") == "failure"),
+        "local_running": sum(1 for r in rows if r.get("local_status") in ("running", "waiting")),
+    }
+    return {
+        "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "auth_ok": bool(gh_token()),
+        "summary": summary,
+        "rows": rows,
+    }
 
 
 def issues() -> dict:
-    """All open issues across active owned repos, newest first.
-    Uses the REST issues endpoint per repo (5000/hr) rather than the
-    /search API (30/min) so the fan-out doesn't hit the rate limit."""
-    def build():
-        repos = gh_active_repos()
-        rows = []
-        with ThreadPoolExecutor(max_workers=8) as ex:
-            futures = [ex.submit(_repo_open_issues, r["full_name"]) for r in repos]
-            for fut in as_completed(futures):
-                try:
-                    rows.extend(fut.result())
-                except Exception:
-                    pass
-        rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
-        summary = {
-            "total": len(rows),
-            "ci_failures": sum(1 for r in rows if r["is_ci_failure"]),
-            "repos": len({r["repo"] for r in rows}),
-        }
-        return {
-            "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "auth_ok": bool(gh_token()),
-            "summary": summary,
-            "rows": rows,
-        }
-    return cached("issues", GH_CACHE_SECS, build)
+    """Local-only: from the issue store (failure watcher writes it;
+    GitHub webhooks update state). No polling."""
+    store = load_issue_store()
+    rows = [r for r in store.values() if (r.get("state") or "open") == "open"]
+    for r in rows:
+        r["is_ci_failure"] = LABEL_CI_FAILURE in (r.get("labels") or [])
+    rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
+    summary = {
+        "total": len(rows),
+        "ci_failures": sum(1 for r in rows if r.get("is_ci_failure")),
+        "repos": len({r.get("repo") for r in rows}),
+    }
+    return {
+        "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "auth_ok": bool(gh_token()),
+        "summary": summary,
+        "rows": rows,
+    }
+
+
+# ============================================================
+# GitHub webhook receiver (active callback — no polling)
+# ============================================================
+
+WEBHOOK_SECRET_FILE = os.environ.get(
+    "WEBHOOK_SECRET_FILE", "/etc/forcicd/webhook-secret")
+
+
+def webhook_secret() -> bytes:
+    try:
+        with open(WEBHOOK_SECRET_FILE) as f:
+            return f.read().strip().encode()
+    except FileNotFoundError:
+        return b""
+
+
+def verify_signature(body: bytes, sig256: str) -> bool:
+    """Constant-time check of GitHub's X-Hub-Signature-256."""
+    import hashlib
+    import hmac
+    secret = webhook_secret()
+    if not secret or not sig256:
+        return False
+    mac = hmac.new(secret, body, hashlib.sha256)
+    expected = "sha256=" + mac.hexdigest()
+    return hmac.compare_digest(expected, sig256)
+
+
+def forgejo_post(path: str) -> int:
+    """Authenticated POST to Forgejo (e.g. mirror-sync)."""
+    req = urllib.request.Request(f"{FORGEJO_URL}{path}", method="POST", data=b"")
+    hdr = auth_header_forgejo()
+    if hdr:
+        req.add_header("Authorization", hdr)
+    try:
+        with urllib.request.urlopen(req, timeout=5) as r:
+            return r.status
+    except urllib.error.HTTPError as e:
+        return e.code
+    except (urllib.error.URLError, TimeoutError):
+        return 0
+
+
+def handle_webhook(event: str, payload: dict) -> dict:
+    """Dispatch a verified GitHub webhook. Push → instant
+    mirror-sync + build; issues/PR → update the local store;
+    release → record. Everything stays local; no polling."""
+    repo_full = (payload.get("repository") or {}).get("full_name", "")
+    name = repo_full.split("/")[-1] if repo_full else ""
+    result = {"event": event, "repo": repo_full, "actions": []}
+
+    if event == "push" and name:
+        # Sync the Forgejo mirror right now so CI runs immediately
+        # instead of waiting for the 60s pull interval.
+        code = forgejo_post(f"/api/v1/repos/{ADMIN_USER}/{name}/mirror-sync")
+        result["actions"].append(f"mirror-sync ci/{name} -> {code}")
+
+    elif event in ("issues", "pull_request"):
+        obj = payload.get("issue") or payload.get("pull_request") or {}
+        if obj:
+            upsert_issue({
+                "repo": repo_full,
+                "number": obj.get("number"),
+                "title": obj.get("title"),
+                "labels": [l.get("name") for l in (obj.get("labels") or [])],
+                "state": obj.get("state"),
+                "html_url": obj.get("html_url"),
+                "updated_at": obj.get("updated_at"),
+                "kind": "pr" if event == "pull_request" else "issue",
+            })
+            result["actions"].append(
+                f"store {repo_full}#{obj.get('number')} {obj.get('state')}")
+
+    elif event == "release":
+        rel = payload.get("release") or {}
+        result["actions"].append(
+            f"release {repo_full} {rel.get('tag_name')} ({rel.get('action', payload.get('action'))})")
+        # (publish/notify hook point — extend as needed)
+
+    elif event == "ping":
+        result["actions"].append("pong")
+
+    return result
 
 
 # ============================================================
@@ -499,140 +576,74 @@ a:hover { text-decoration: underline; }
 <div class="grid" id="summary"></div>
 
 <div class="controls">
-  <input class="search" id="filter" placeholder="filter (name / status / owner)…">
-  <label class="dim" style="cursor:pointer; user-select:none;">
-    <input type="checkbox" id="hidenoci" checked> hide no-CI
-  </label>
-  <label class="dim" style="cursor:pointer; user-select:none;">
-    <input type="checkbox" id="showgh"> show github ci
-  </label>
+  <input class="search" id="filter" placeholder="filter (repo / status)…">
   <span class="dim" id="resultcount"></span>
 </div>
 
 <table id="t">
   <thead><tr>
-    <th data-k="full_name">repo</th>
+    <th data-k="name">repo (mirror)</th>
     <th data-k="local_status">forcicd ci</th>
-    <th data-k="ci_conclusion" class="ghcol" style="display:none">github ci</th>
-    <th data-k="pr_count">PRs</th>
-    <th data-k="open_issues_count">issues</th>
-    <th data-k="pushed_at">last push</th>
-    <th>flags</th>
+    <th data-k="local_sha">sha</th>
   </tr></thead>
   <tbody id="rows"></tbody>
 </table>
 
-<p class="foot">data refreshes every 15s · last: <span id="now">—</span></p>
+<p class="foot">local data (no GitHub polling) · webhook-driven · refresh 15s · last: <span id="now">—</span></p>
 
 <script>
-let DATA = {rows: [], summary: {}, active_days: 0};
-let SORT = {k: "pushed_at", desc: true};
+let DATA = {rows: [], summary: {}};
+let SORT = {k: "name", desc: false};
 
-function pill(text, cls) {
-  return `<span class="pill ${cls||''}">${text||'—'}</span>`;
-}
-function ciCell(r) {
-  if (r.ci_status === "queued" || r.ci_status === "in_progress")
-    return `<a href="${r.ci_url||'#'}">${pill(r.ci_status, 'warn')}</a>`;
-  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}">${pill('passing','ok')}</a>`;
-  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}">${pill('failing','bad')}</a>`;
-  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}">${pill('cancelled','dim')}</a>`;
-  if (r.ci_conclusion === null && r.ci_status === null) return `<span class="dim">no ci</span>`;
-  return `<a href="${r.ci_url||'#'}">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
-}
-// forcicd-local build status. Click → the Forgejo run log.
+function pill(text, cls) { return `<span class="pill ${cls||''}">${text||'—'}</span>`; }
 function localCell(r) {
-  if (!r.mirrored) return `<span class="dim">—</span>`;
   const u = r.local_url || '#';
-  if (r.local_status === null)
-    return `<a href="${u}">${pill('pending','dim')}</a>`;
-  if (r.local_status === "success")
-    return `<a href="${u}">${pill('built ✓','ok')}</a>`;
-  if (r.local_status === "failure")
-    return `<a href="${u}">${pill('built ✗','bad')}</a>`;
-  if (r.local_status === "running" || r.local_status === "waiting")
-    return `<a href="${u}">${pill(r.local_status,'warn')}</a>`;
-  return `<a href="${u}">${pill(r.local_status||'?','dim')}</a>`;
-}
-function flagCell(r) {
-  let f = [];
-  if (r.private) f.push(pill('priv'));
-  if (r.fork) f.push(pill('fork'));
-  if (r.archived) f.push(pill('archived','dim'));
-  return f.join(' ');
-}
-function ago(iso) {
-  if (!iso) return '—';
-  const ms = Date.now() - new Date(iso).getTime();
-  const m = Math.floor(ms/60000); const h = Math.floor(m/60); const d = Math.floor(h/24);
-  if (d > 0) return `${d}d ago`;
-  if (h > 0) return `${h}h ago`;
-  if (m > 0) return `${m}m ago`;
-  return 'just now';
+  switch (r.local_status) {
+    case null: case undefined: return `<a href="${u}">${pill('pending','dim')}</a>`;
+    case 'success': return `<a href="${u}">${pill('built ✓','ok')}</a>`;
+    case 'failure': return `<a href="${u}">${pill('built ✗','bad')}</a>`;
+    case 'running': case 'waiting': return `<a href="${u}">${pill(r.local_status,'warn')}</a>`;
+    default: return `<a href="${u}">${pill(r.local_status,'dim')}</a>`;
+  }
 }
 function render() {
   const s = DATA.summary;
   document.getElementById('summary').innerHTML = `
-    <div class="card"><div class="label">active (${DATA.active_days}d)</div><div class="value">${s.total_active||0}</div></div>
     <div class="card"><div class="label">mirrored</div><div class="value">${s.mirrored||0}</div></div>
     <div class="card"><div class="label">built ✓</div><div class="value ok">${s.local_passing||0}</div></div>
     <div class="card"><div class="label">built ✗</div><div class="value bad">${s.local_failing||0}</div></div>
-    <div class="card"><div class="label">pending</div><div class="value warn">${(s.mirrored||0)-(s.local_passing||0)-(s.local_failing||0)}</div></div>
-    <div class="card"><div class="label">open issues</div><div class="value">${s.open_issues||0}</div></div>
+    <div class="card"><div class="label">running</div><div class="value warn">${s.local_running||0}</div></div>
+    <div class="card"><div class="label">pending</div><div class="value dim">${(s.mirrored||0)-(s.local_passing||0)-(s.local_failing||0)-(s.local_running||0)}</div></div>
+    <div class="card"><div class="label">source</div><div class="value" style="font-size:13px">webhook</div></div>
   `;
-
   const q = document.getElementById('filter').value.toLowerCase();
-  const hideNoCi = document.getElementById('hidenoci').checked;
-  const showGh = document.getElementById('showgh').checked;
-  // "Has CI" = there's a workflow to run locally. We detect that
-  // from either a local run existing or github having had a run
-  // (github's disabled now, but its history tells us a workflow
-  // file is present in the repo).
-  const hasCi = r => r.local_status !== undefined && r.local_status !== null
-                  || !(r.ci_status === null && r.ci_conclusion === null);
-  // Toggle the github column visibility.
-  document.querySelectorAll('.ghcol').forEach(e => e.style.display = showGh ? '' : 'none');
   let rows = DATA.rows.filter(r =>
-    (!hideNoCi || hasCi(r)) &&
-    (!q || (r.full_name||'').toLowerCase().includes(q)
-        || (r.local_status||'').toLowerCase().includes(q)
-        || (r.ci_conclusion||'').toLowerCase().includes(q)
-        || (r.owner||'').toLowerCase().includes(q)));
+    !q || (r.name||'').toLowerCase().includes(q)
+       || (r.local_status||'').toLowerCase().includes(q));
   rows.sort((a,b) => {
     const x = a[SORT.k] ?? ''; const y = b[SORT.k] ?? '';
-    if (x < y) return SORT.desc ? 1 : -1;
-    if (x > y) return SORT.desc ? -1 : 1;
-    return 0;
+    return (x<y?-1:x>y?1:0) * (SORT.desc?-1:1);
   });
   document.getElementById('resultcount').textContent =
     rows.length === DATA.rows.length ? `${rows.length} repos` : `${rows.length} of ${DATA.rows.length}`;
-  const showGhCol = document.getElementById('showgh').checked;
   document.getElementById('rows').innerHTML = rows.map(r => `
     <tr>
-      <td><a href="${r.html_url}">${r.full_name}</a></td>
+      <td><a href="http://forcicd.g8.lo:3000/ci/${r.name}">${r.name}</a></td>
       <td>${localCell(r)}</td>
-      <td class="ghcol" style="display:${showGhCol?'':'none'}">${ciCell(r)}</td>
-      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
-      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
-      <td class="dim">${ago(r.pushed_at)}</td>
-      <td>${flagCell(r)}</td>
+      <td class="dim">${r.local_sha || '—'}</td>
     </tr>`).join('');
   document.getElementById('subtitle').textContent =
-    DATA.auth_ok
-      ? `local-only CI · forcicd is authoritative · github actions disabled · ${DATA.active_days}d window`
-      : 'NO GH TOKEN — put one at /etc/forcicd/github-token on the VM';
+    'local-only · forcicd is authoritative · GitHub pushes events here (webhooks), forcicd pushes back';
 }
 async function tick() {
   try {
     const d = await (await fetch('/overview.json')).json();
-    DATA = d;
-    document.getElementById('now').textContent = d.now;
-    render();
-  } catch (e) { /* keep last render */ }
+    DATA = d; document.getElementById('now').textContent = d.now; render();
+  } catch (e) {}
 }
 document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
   const k = th.dataset.k;
-  SORT = (SORT.k === k) ? {k, desc: !SORT.desc} : {k, desc: true};
+  SORT = (SORT.k === k) ? {k, desc: !SORT.desc} : {k, desc: false};
   render();
 });
 document.getElementById('filter').oninput = render;
@@ -957,6 +968,20 @@ class Handler(http.server.BaseHTTPRequestHandler):
                                        payload.get("mode", "fixit"))
             code = 200 if result.get("ok") else 400
             self._send(json.dumps(result).encode(), "application/json", code)
+        elif self.path == "/webhook/github":
+            length = int(self.headers.get("Content-Length", "0"))
+            body = self.rfile.read(length)
+            sig = self.headers.get("X-Hub-Signature-256", "")
+            if not verify_signature(body, sig):
+                self._send(b'{"error":"bad signature"}', "application/json", 401)
+                return
+            event = self.headers.get("X-GitHub-Event", "")
+            try:
+                payload = json.loads(body or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            result = handle_webhook(event, payload)
+            self._send(json.dumps(result).encode(), "application/json", 200)
         else:
             self.send_response(404); self.end_headers()
 

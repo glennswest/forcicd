@@ -116,6 +116,35 @@ def gh(method, path, body=None):
         return 0, None
 
 
+ISSUE_STORE = os.environ.get("ISSUE_STORE", "/var/lib/forcicd/issues.json")
+
+
+def record_issue(repo_full, issue, labels):
+    """Mirror a filed issue into the dashboard's local store so it
+    shows without polling (webhooks keep it in sync afterwards)."""
+    key = f"{repo_full}#{issue.get('number')}"
+    try:
+        try:
+            store = json.load(open(ISSUE_STORE))
+        except (FileNotFoundError, json.JSONDecodeError):
+            store = {}
+        store[key] = {
+            "repo": repo_full,
+            "number": issue.get("number"),
+            "title": issue.get("title"),
+            "labels": labels,
+            "state": "open",
+            "html_url": issue.get("html_url"),
+            "updated_at": issue.get("created_at"),
+            "kind": "issue",
+        }
+        tmp = ISSUE_STORE + ".tmp"
+        json.dump(store, open(tmp, "w"))
+        os.replace(tmp, ISSUE_STORE)
+    except OSError:
+        pass
+
+
 def load_state():
     return set(filter(None, _read(STATE_FILE).splitlines()))
 
@@ -226,6 +255,7 @@ def file_issue(name, info):
                        {"title": title, "body": body, "labels": [LABEL]})
     if code in (200, 201) and created:
         append_state(key)
+        record_issue(repo_full, created, [LABEL])
         return f"  + {name}@{sha7} -> issue #{created.get('number')}"
     return f"  ! {name}@{sha7} (issue create failed, HTTP {code})"
 
