@@ -32,7 +32,7 @@ to ~1–2 minutes — **push to deploy** on the LAN.
 │   - CD watcher (systemd timer, polls every 30s) — when a new     │
 │     green build lands on main, fetches the artifact, builds the  │
 │     scratch container, pushes to fastregistry, rolls kubetest    │
-│   - Ops dashboard (port 8090) — system + CD state                │
+│   - Ops dashboard (port 80, also 8090) — multi-project + CD     │
 └──────────────────────────────────────────────────────────────────┘
             │                                       ▲
             │ image push                            │ git pull mirror
@@ -81,7 +81,7 @@ build args.
 | URL | What it shows |
 |---|---|
 | `http://forcicd.g8.lo:3000` | **Forgejo** — code, workflow runs, runners, mirror settings, admin |
-| `http://forcicd.g8.lo:8090` | **forcicd ops dashboard** — VM/container health, runner labels, CD drift |
+| `http://forcicd.g8.lo` | **forcicd ops dashboard** — multi-project overview + local CI (also on `:8090`) |
 
 The CLI equivalents are `make status` (point-in-time) and
 `make verify` (nonzero on first failure).

@@ -116,6 +116,8 @@ services:
     security_opt:
       - label=disable
     ports:
+      # Primary: plain http on :80. :8090 kept for existing links.
+      - "80:8090"
       - "8090:8090"
 
 volumes:

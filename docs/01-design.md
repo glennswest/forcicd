@@ -45,7 +45,7 @@ path entirely while keeping the YAML and the ecosystem.
                                     │  CD watcher (systemd timer 30s) ──         │
                                     │     poll for new green builds              │
                                     │                                            │
-                                    │  Ops dashboard (:8090) ── health + CD drift│
+                                    │  Ops dashboard (:80) ── multi-project + CD │
                                     └──────────────────────────────────────────┘
                                                   │
                                                   │ docker push (insecure-registries)

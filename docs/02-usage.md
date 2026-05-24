@@ -7,8 +7,8 @@ and letting CI jobs push commits / cut releases back to GitHub.
 
 | URL | View |
 |---|---|
-| `http://forcicd.g8.lo:8090/` | **Overview** — every repo you own, pushed in the last 30 days, in one table: latest CI status, open PRs, open issues, last-push age. Header has roll-up counts. Sort by clicking a column; filter with the search box. |
-| `http://forcicd.g8.lo:8090/local` | **Local CI** — forcicd internals: VM/container health, runner labels, mirror sync, CD drift. |
+| `http://forcicd.g8.lo/` | **Overview** — every repo you own, pushed in the last 30 days, in one table: latest CI status, open PRs, open issues, last-push age. Header has roll-up counts. Sort by clicking a column; filter with the search box. (Also on `:8090`.) |
+| `http://forcicd.g8.lo/local` | **Local CI** — forcicd internals: VM/container health, runner labels, mirror sync, CD drift. |
 | `http://forcicd.g8.lo:3000/` | **Forgejo** — the actual git server: code, workflow runs + logs, runner admin, repo settings, secrets. |
 
 ### Tuning the overview
