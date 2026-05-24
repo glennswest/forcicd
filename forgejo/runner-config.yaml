@@ -12,7 +12,10 @@ log:
 
 runner:
   file: /data/.runner
-  capacity: 1
+  # Run several jobs concurrently — the VM has 12 vCPU / 32 GiB.
+  # Each job is its own container; 4 leaves headroom for forgejo +
+  # registry + dashboard and for cargo's own parallelism.
+  capacity: 4
   timeout: 3h
 
 container:

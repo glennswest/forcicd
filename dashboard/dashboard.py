@@ -387,6 +387,9 @@ a:hover { text-decoration: underline; }
 
 <div class="controls">
   <input class="search" id="filter" placeholder="filter (name / status / owner)…">
+  <label class="dim" style="cursor:pointer; user-select:none;">
+    <input type="checkbox" id="hidenoci" checked> hide no-CI
+  </label>
   <span class="dim" id="resultcount"></span>
 </div>
 
@@ -448,11 +451,14 @@ function render() {
   `;
 
   const q = document.getElementById('filter').value.toLowerCase();
+  const hideNoCi = document.getElementById('hidenoci').checked;
+  const hasCi = r => !(r.ci_status === null && r.ci_conclusion === null);
   let rows = DATA.rows.filter(r =>
-    !q || (r.full_name||'').toLowerCase().includes(q)
-       || (r.ci_conclusion||'').toLowerCase().includes(q)
-       || (r.ci_status||'').toLowerCase().includes(q)
-       || (r.owner||'').toLowerCase().includes(q));
+    (!hideNoCi || hasCi(r)) &&
+    (!q || (r.full_name||'').toLowerCase().includes(q)
+        || (r.ci_conclusion||'').toLowerCase().includes(q)
+        || (r.ci_status||'').toLowerCase().includes(q)
+        || (r.owner||'').toLowerCase().includes(q)));
   rows.sort((a,b) => {
     const x = a[SORT.k] ?? ''; const y = b[SORT.k] ?? '';
     if (x < y) return SORT.desc ? 1 : -1;
@@ -489,6 +495,7 @@ document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
   render();
 });
 document.getElementById('filter').oninput = render;
+document.getElementById('hidenoci').onchange = render;
 tick();
 setInterval(tick, 15000);
 </script>
