@@ -1,0 +1,11 @@
+[Unit]
+Description=Drain forcicd auto-fix requests every 15s
+
+[Timer]
+OnBootSec=30s
+OnUnitActiveSec=15s
+Unit=forcicd-fixd.service
+AccuracySec=3s
+
+[Install]
+WantedBy=timers.target

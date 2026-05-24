@@ -1,0 +1,9 @@
+[Unit]
+Description=forcicd auto-fix dispatcher — launch agent workers for queued fix requests
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/opt/forcicd/fix-dispatcher.sh
+StandardOutput=journal
+StandardError=journal
