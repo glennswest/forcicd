@@ -1,21 +1,22 @@
 #!/usr/bin/env bash
 # Build the base LXC template the auto-fix LXC backend clones.
 #
-# Creates a CT on pve.g8.lo with git + vi + screen + build
-# toolchains + Node.js (Claude Code needs node), converts it to a
-# template, and prints the steps for YOU to install your Claude
-# client + the history/indexing add-on into it (that's the part
-# tied to your subscription).
+# This env does NOT build anything — forcicd's CI does all builds.
+# It only needs git + an editor + Node.js (for Claude Code) so
+# Claude can clone, edit, and commit back. No rust/go/gcc here.
+#
+# Creates a CT on pve.g8.lo, installs that minimal set, and prints
+# the steps for YOU to install your Claude client + the
+# history/indexing add-on (the part tied to your subscription),
+# then `pct template` it.
 #
 # Usage:
-#   ./scripts/build-fix-lxc-template.sh [CTID]
-#       CTID defaults to 9000 (matches FIX_LXC_IDBASE-1 convention).
+#   ./scripts/build-fix-lxc-template.sh [CTID]   # default 9000
 #
-# Claude Code is large — the template gets a 32 GiB root by default
-# (override with TEMPLATE_DISK_GB). After you bake claude in,
-# `pct template <id>` it (this script does the base; re-run
-# `pct template` yourself after installing claude if you cloned to
-# customize).
+# Claude Code itself is large — the template gets a 16 GiB root by
+# default (override with TEMPLATE_DISK_GB). The codebase index is
+# kept OUTSIDE the template (bind-mounted per repo) so it persists
+# across throwaway clones and you don't re-spend tokens re-indexing.
 
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,9 +25,9 @@ source "${HERE}/_lib.sh"
 
 CTID="${1:-9000}"
 : "${PVE_HOST:=root@pve.g8.lo}"
-: "${TEMPLATE_DISK_GB:=32}"
-: "${TEMPLATE_MEM_MB:=8192}"
-: "${TEMPLATE_CORES:=4}"
+: "${TEMPLATE_DISK_GB:=16}"
+: "${TEMPLATE_MEM_MB:=4096}"
+: "${TEMPLATE_CORES:=2}"
 : "${TEMPLATE_BRIDGE:=vmbr0}"
 : "${TEMPLATE_OSTEMPLATE:=}"   # e.g. local:vztmpl/debian-12-standard_*.tar.zst
 
@@ -60,17 +61,15 @@ ssh "${PVE_HOST}" "set -e
     pct start ${CTID}
     for i in \$(seq 1 30); do pct exec ${CTID} -- true 2>/dev/null && break; sleep 1; done"
 
-echo "==> installing base toolchain (git, vi, screen, node, build deps)"
+echo "==> installing the minimal env (git, vim, screen, node — NO build toolchain)"
 ssh "${PVE_HOST}" "pct exec ${CTID} -- bash -lc '
     export DEBIAN_FRONTEND=noninteractive
     apt-get update
     apt-get install -y --no-install-recommends \
-        git vim screen curl wget ca-certificates jq sudo \
-        build-essential pkg-config libssl-dev \
-        python3 python3-pip nodejs npm \
-        unzip xz-utils
-    # rust + go are handy for the common repos
-    curl -sSf https://sh.rustup.rs | sh -s -- -y --profile minimal --no-modify-path || true
+        git vim screen curl wget ca-certificates jq sudo openssh-client \
+        nodejs npm python3
+    git config --system user.name forcicd
+    git config --system user.email ci@g8.lo
     echo done'"
 
 cat <<EOF

@@ -16,6 +16,7 @@ source "${HERE}/_lib.sh"
 
 echo "==> copy agent files to ${VM_NAME}"
 scp -q "${REPO_ROOT}/ci/fix-worker.sh" "${REPO_ROOT}/ci/fix-dispatcher.sh" \
+    "${REPO_ROOT}/ci/fix-env.sh" \
     "${REPO_ROOT}/ci/forcicd-fixd.service" "${REPO_ROOT}/ci/forcicd-fixd.timer" \
     "${REPO_ROOT}/ci/fix.env.sample" \
     "${VM_SSH}:/tmp/"
@@ -31,11 +32,12 @@ install -d -m 0755 /opt/forcicd /var/lib/forcicd/fix-requests \
     /var/lib/forcicd/fix-workspaces /var/lib/forcicd/fix-logs
 install -m 0755 /tmp/fix-worker.sh /opt/forcicd/fix-worker.sh
 install -m 0755 /tmp/fix-dispatcher.sh /opt/forcicd/fix-dispatcher.sh
+install -m 0755 /tmp/fix-env.sh /opt/forcicd/fix-env.sh
 install -m 0644 /tmp/forcicd-fixd.service /etc/systemd/system/forcicd-fixd.service
 install -m 0644 /tmp/forcicd-fixd.timer   /etc/systemd/system/forcicd-fixd.timer
 [ -f /etc/forcicd/fix.env ] || install -m 0644 /tmp/fix.env.sample /etc/forcicd/fix.env
-rm -f /tmp/fix-worker.sh /tmp/fix-dispatcher.sh /tmp/forcicd-fixd.service \
-      /tmp/forcicd-fixd.timer /tmp/fix.env.sample
+rm -f /tmp/fix-worker.sh /tmp/fix-dispatcher.sh /tmp/fix-env.sh \
+      /tmp/forcicd-fixd.service /tmp/forcicd-fixd.timer /tmp/fix.env.sample
 # Drop any prior .path unit (replaced by a timer — the .path looped
 # because the dispatcher modifies the dir it watches).
 systemctl disable --now forcicd-fixd.path 2>/dev/null || true
