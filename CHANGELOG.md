@@ -2,6 +2,28 @@
 
 ## [Unreleased]
 
+### 2026-05-24 (agent)
+- **feat:** Issue-driven auto-fix. The `/issues` tab lists open
+  issues across all repos; `ci-failure` issues get **fixit**
+  (autonomous Claude, writes up the fix, posts it, closes the issue
+  on green) and **interactive** (attachable `screen` session in a
+  throwaway env) buttons.
+- **feat:** `ci/fix-worker.sh` + `fix-dispatcher.sh` +
+  `forcicd-fixd.timer` (KillMode=process so screen workers survive).
+  Pluggable `FIX_BACKEND`: docker (default) or lxc
+  (`ci/fix-lxc.sh`, throwaway CT on pve.g8.lo).
+- **feat:** `scripts/build-fix-lxc-template.sh` builds the base LXC
+  template (git/vi/screen/node/toolchain) for you to bake Claude +
+  the indexing add-on into.
+- **feat:** `ci/issue-on-failure.sh` + `forcicd-issues.timer` — a
+  failed local build files a deduped `ci-failure` GitHub issue with
+  the failed-job list + run-log link.
+- **feat:** "no release on red" — the CD watcher only deploys a SHA
+  whose `test (ubuntu-*)` jobs are all green (verified: rspacefs
+  blocked, fastetcd deploys only the green SHA).
+- **docs:** `docs/02-usage.md` gains the auto-fix + Claude-wiring
+  sections.
+
 ### 2026-05-24
 - **feat:** Multi-project overview dashboard (`:8090/`) across all
   owned GitHub repos — CI status, open PRs/issues, last-push age,

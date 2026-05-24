@@ -187,6 +187,48 @@ State (last-deployed SHA) lives at
 `/var/lib/forcicd/last-deployed`; the dashboard's Local CI tab
 shows drift between latest-green and last-deployed.
 
+## Issue-driven auto-fix (Claude)
+
+The `/issues` tab lists every open issue across your repos;
+`ci-failure` issues get two buttons:
+
+- **▶ fixit** — autonomous. Spins a throwaway env, hands Claude the
+  issue as the brief, lets it iterate with no turn limit, runs the
+  build cycle. Claude writes a full root-cause + fix explanation to
+  `FIX_WRITEUP.md`, which is posted to the issue. On a **green
+  build** the issue gets a success comment and is **closed**
+  (optionally a PR is opened); on red it stays open with the
+  attempt attached.
+- **⌨ interactive** — spins the same env with the repo + Claude +
+  toolchain ready and leaves an attachable `screen` session; the
+  attach command is posted to the issue. You drive it by hand;
+  it tears down when you exit.
+
+Both run via the host-side dispatcher (`forcicd-fixd.timer`) that
+drains requests the dashboard drops. Install with
+`scripts/install-fix-agent.sh`, then set the Claude hook in
+`/etc/forcicd/fix.env`.
+
+### Wiring your Claude client
+
+The Claude client + subscription is yours to provide; forcicd
+gives it a repo, a brief, and a build loop. Set in
+`/etc/forcicd/fix.env`:
+
+- `CLAUDE_CMD` — how to invoke it headlessly (gets the brief on
+  stdin + at `/work/TASK.md`; must edit the tree in place and, for
+  fixit, write `FIX_WRITEUP.md`).
+- `FIX_BACKEND` — `docker` (throwaway container on the VM; mount
+  Claude via `FIX_MOUNTS` or bake it into `FIX_IMAGE`) or `lxc`
+  (throwaway CT on pve.g8.lo cloned from a template).
+- For **lxc**: build the base template with
+  `scripts/build-fix-lxc-template.sh`, install your Claude client +
+  the history/indexing add-on into it (it persists the index across
+  runs), `pct template` it, and set `FIX_LXC_TEMPLATE`.
+
+Attach to any running worker: `ssh fedora@forcicd.g8.lo` then
+`sudo screen -r <session>`.
+
 ## Roadmap notes
 
 - **GitLab repos** — the overview is GitHub-only today. The
