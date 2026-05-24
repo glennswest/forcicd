@@ -151,6 +151,28 @@ mean it.
 > macOS-only jobs. forcicd's CD watcher sidesteps this by gating
 > on "all `test (ubuntu-*)` green" rather than on the build job.
 
+## Failures → issues, and the release gate
+
+Two guarantees once `scripts/install-ci-issues.sh` and
+`scripts/install-cd.sh` are in place:
+
+1. **A failed local build files a GitHub issue.** Every 60s,
+   `ci/issue-on-failure.sh` checks the newest commit of each
+   mirrored repo; if any job failed and there's no open
+   `ci-failure` issue for that commit, it opens one on
+   `github.com/<owner>/<repo>` listing the failed jobs + a link to
+   the forcicd run log. Deduped, so you get one issue per failing
+   commit, not per poll.
+
+2. **A red build never releases.** The CD watcher only acts on a
+   commit whose gating jobs (default: every `test (ubuntu-*)`
+   matrix entry) are *all* success with *zero* failures. A repo
+   with a failing test has "no deployable green SHA" and is
+   skipped — no image push, no pod roll, no tag. For release jobs
+   that live inside a workflow, gate them the same way:
+   `needs: [test]` (Forgejo honours it — a failed dependency means
+   the release job never starts).
+
 ## CD: push-to-deploy
 
 `scripts/install-cd.sh` installs a systemd timer that, every 30s,
