@@ -110,6 +110,7 @@ services:
       - FORGEJO_ADMIN_USER=ci
     volumes:
       - /etc/forcicd/admin-password:/etc/forcicd/admin-password:ro
+      - /etc/forcicd/github-token:/etc/forcicd/github-token:ro
       - /var/lib/forcicd:/var/lib/forcicd:ro
       - /var/run/docker.sock:/var/run/docker.sock:ro,z
     security_opt:

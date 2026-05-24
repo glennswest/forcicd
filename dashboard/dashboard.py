@@ -1,23 +1,31 @@
 #!/usr/bin/env python3
-# forcicd ops dashboard — single-file HTTP server at :8090.
+# forcicd ops dashboard.
 #
-# Forgejo at :3000 is the GUI for code, workflows, runners, and the
-# mirror. This dashboard is the *forcicd-specific* view: VM/container
-# health, what the runner is doing, and CD state (last green build
-# vs. last deployed SHA).
+# Two views:
 #
-# Refreshes every 5s on the client; data is collected per-request.
+#   /          (default) — multi-project overview. All active GitHub
+#                          repos in one table: latest CI status, open
+#                          PRs, open issues, last push. Filterable by
+#                          recency (default: last 30 days).
+#   /local     — forcicd-specific: VM/container/runner/mirror/CD state.
+#
+# Refreshes client-side every 5–15 seconds depending on the view.
 
+import http.client
 import http.server
 import json
 import os
 import socket
-import subprocess
+import threading
+import time
 import urllib.error
 import urllib.request
 from base64 import b64encode
-from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
+# --- forcicd-local config -----------------------------------------
 FORGEJO_URL = os.environ.get("FORGEJO_URL", "http://forgejo:3000")
 REPO        = os.environ.get("FORGEJO_REPO", "ci/fastetcd")
 ADMIN_USER  = os.environ.get("FORGEJO_ADMIN_USER", "ci")
@@ -25,8 +33,28 @@ ADMIN_PW_FILE = os.environ.get("ADMIN_PW_FILE", "/etc/forcicd/admin-password")
 STATE_FILE  = os.environ.get("STATE_FILE", "/var/lib/forcicd/last-deployed")
 DOCKER_SOCK = os.environ.get("DOCKER_SOCK", "/var/run/docker.sock")
 
+# --- github config ------------------------------------------------
+GH_TOKEN_FILE = os.environ.get("GH_TOKEN_FILE", "/etc/forcicd/github-token")
+GH_API = "https://api.github.com"
+# How many repos to pull from /user/repos. GitHub max is 100 per page.
+GH_REPOS_PAGES = int(os.environ.get("GH_REPOS_PAGES", "5"))
+# Overview defaults to repos active in the last 30 days.
+GH_ACTIVE_DAYS = int(os.environ.get("GH_ACTIVE_DAYS", "30"))
+# Which repos to include by affiliation. Default `owner` shows
+# only repos you own (not the hundreds you can see via org
+# membership). Set to "owner,collaborator,organization_member"
+# to widen.
+GH_AFFILIATION = os.environ.get("GH_AFFILIATION", "owner")
+# Cache GitHub responses for 60s — we have rate limits and a lot of
+# repos. The UI refresh is 15s; the cache cushion absorbs that.
+GH_CACHE_SECS = int(os.environ.get("GH_CACHE_SECS", "60"))
 
-def auth_header() -> str | None:
+
+# ============================================================
+# Forgejo / local-state helpers (unchanged from v1)
+# ============================================================
+
+def auth_header_forgejo() -> str | None:
     try:
         with open(ADMIN_PW_FILE) as f:
             pw = f.read().strip()
@@ -37,9 +65,9 @@ def auth_header() -> str | None:
         return None
 
 
-def get_json(path: str) -> dict | None:
-    hdr = auth_header()
+def get_forgejo(path: str) -> dict | None:
     req = urllib.request.Request(f"{FORGEJO_URL}{path}")
+    hdr = auth_header_forgejo()
     if hdr:
         req.add_header("Authorization", hdr)
     try:
@@ -50,9 +78,7 @@ def get_json(path: str) -> dict | None:
 
 
 def docker_ps() -> list[dict]:
-    """Hit the docker socket directly — no docker CLI in the container."""
     try:
-        import http.client
         conn = http.client.HTTPConnection("localhost", 80)
         conn.sock = socket.socket(socket.AF_UNIX)
         conn.sock.connect(DOCKER_SOCK)
@@ -65,15 +91,13 @@ def docker_ps() -> list[dict]:
         return []
 
 
-def collect() -> dict:
+def local_state() -> dict:
     out: dict = {"now": datetime.now(timezone.utc).isoformat(timespec="seconds")}
 
-    # Forgejo version
-    ver = get_json("/api/v1/version")
+    ver = get_forgejo("/api/v1/version")
     out["forgejo_version"] = ver.get("version") if ver else None
 
-    # Mirror state
-    repo = get_json(f"/api/v1/repos/{REPO}")
+    repo = get_forgejo(f"/api/v1/repos/{REPO}")
     if repo:
         out["mirror"] = {
             "branch": repo.get("default_branch"),
@@ -84,8 +108,7 @@ def collect() -> dict:
     else:
         out["mirror"] = None
 
-    # Latest workflow run
-    runs = get_json(f"/api/v1/repos/{REPO}/actions/runs?limit=1") or {}
+    runs = get_forgejo(f"/api/v1/repos/{REPO}/actions/tasks?limit=1") or {}
     latest = (runs.get("workflow_runs") or [None])[0]
     if latest:
         out["latest_run"] = {
@@ -99,28 +122,23 @@ def collect() -> dict:
     else:
         out["latest_run"] = None
 
-    # Latest *green* run on main
-    green = get_json(
-        f"/api/v1/repos/{REPO}/actions/runs"
-        f"?branch=main&status=success&limit=1"
+    green = get_forgejo(
+        f"/api/v1/repos/{REPO}/actions/tasks?branch=main&status=success&limit=1"
     ) or {}
     g = (green.get("workflow_runs") or [None])[0]
     out["latest_green_sha"] = (g.get("head_sha") if g else None)
 
-    # Last deployed (from the CD watcher's state file)
     try:
         with open(STATE_FILE) as f:
             out["last_deployed_sha"] = f.read().strip()
     except FileNotFoundError:
         out["last_deployed_sha"] = None
 
-    # Drift
     if out["latest_green_sha"] and out["last_deployed_sha"]:
         out["in_sync"] = out["latest_green_sha"] == out["last_deployed_sha"]
     else:
         out["in_sync"] = None
 
-    # Containers
     out["containers"] = [
         {
             "name": (c["Names"][0] if c.get("Names") else "")[1:],
@@ -131,36 +149,366 @@ def collect() -> dict:
         for c in docker_ps()
     ]
 
-    # Runners (Forgejo admin API)
-    runners = get_json("/api/v1/admin/runners")
-    if runners:
-        out["runners"] = [
-            {
-                "id": r.get("id"),
-                "name": r.get("name"),
-                "version": r.get("version"),
-                "labels": [l.get("name") for l in (r.get("labels") or [])],
-                "last_online": r.get("last_online"),
-                "status": r.get("status"),
-            }
-            for r in (runners.get("runners") or [])
-        ]
-    else:
-        out["runners"] = []
+    runners = get_forgejo("/api/v1/admin/runners")
+    out["runners"] = [
+        {
+            "id": r.get("id"),
+            "name": r.get("name"),
+            "version": r.get("version"),
+            "labels": [l.get("name") for l in (r.get("labels") or [])],
+            "last_online": r.get("last_online"),
+            "status": r.get("status"),
+        }
+        for r in (runners.get("runners") if runners else []) or []
+    ]
 
     return out
 
 
-PAGE = """<!doctype html>
+# ============================================================
+# GitHub helpers + overview
+# ============================================================
+
+_gh_token_cached = None
+
+def gh_token() -> str | None:
+    global _gh_token_cached
+    if _gh_token_cached is None:
+        try:
+            with open(GH_TOKEN_FILE) as f:
+                _gh_token_cached = f.read().strip() or None
+        except FileNotFoundError:
+            _gh_token_cached = ""
+    return _gh_token_cached or None
+
+
+def gh_request(path: str) -> tuple[int, list | dict | None, dict]:
+    """GET against api.github.com; returns (status, json, headers)."""
+    tok = gh_token()
+    if not tok:
+        return (0, None, {})
+    url = path if path.startswith("http") else f"{GH_API}{path}"
+    req = urllib.request.Request(url, headers={
+        "Authorization": f"Bearer {tok}",
+        "Accept": "application/vnd.github+json",
+        "X-GitHub-Api-Version": "2022-11-28",
+        "User-Agent": "forcicd-dashboard",
+    })
+    try:
+        with urllib.request.urlopen(req, timeout=8) as r:
+            return (r.status, json.loads(r.read()), dict(r.headers))
+    except urllib.error.HTTPError as e:
+        return (e.code, None, dict(e.headers))
+    except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+        return (0, None, {})
+
+
+# Simple thread-safe TTL cache: { key: (expires_at, value) }
+_cache: dict[str, tuple[float, object]] = {}
+_cache_lock = threading.Lock()
+
+
+def cached(key: str, ttl: int, producer) -> object:
+    now = time.time()
+    with _cache_lock:
+        hit = _cache.get(key)
+        if hit and hit[0] > now:
+            return hit[1]
+    value = producer()
+    with _cache_lock:
+        _cache[key] = (now + ttl, value)
+    return value
+
+
+def gh_active_repos() -> list[dict]:
+    """All owned repos pushed within the last GH_ACTIVE_DAYS days."""
+    cutoff = datetime.now(timezone.utc) - timedelta(days=GH_ACTIVE_DAYS)
+    repos = []
+    for page in range(1, GH_REPOS_PAGES + 1):
+        status, body, _ = gh_request(
+            f"/user/repos?per_page=100&sort=pushed&direction=desc"
+            f"&affiliation={quote(GH_AFFILIATION)}&page={page}"
+        )
+        if status != 200 or not body:
+            break
+        for r in body:
+            pushed = r.get("pushed_at")
+            if not pushed:
+                continue
+            try:
+                ts = datetime.fromisoformat(pushed.replace("Z", "+00:00"))
+            except ValueError:
+                continue
+            if ts < cutoff:
+                # /user/repos is sorted desc by pushed; everything
+                # after this point is older too.
+                return repos
+            repos.append({
+                "full_name": r.get("full_name"),
+                "name": r.get("name"),
+                "owner": (r.get("owner") or {}).get("login"),
+                "pushed_at": pushed,
+                "default_branch": r.get("default_branch") or "main",
+                "open_issues_count": r.get("open_issues_count", 0),
+                "html_url": r.get("html_url"),
+                "private": r.get("private"),
+                "fork": r.get("fork"),
+                "archived": r.get("archived"),
+            })
+    return repos
+
+
+def gh_repo_status(full_name: str, default_branch: str) -> dict:
+    """Latest CI run + PR count for one repo. Cheap calls only."""
+    out = {
+        "ci_status": None, "ci_conclusion": None, "ci_url": None,
+        "ci_started_at": None,
+        "pr_count": 0,
+    }
+    # Latest workflow run on the default branch.
+    status, body, _ = gh_request(
+        f"/repos/{quote(full_name, safe='/')}/actions/runs"
+        f"?branch={quote(default_branch)}&per_page=1"
+    )
+    if status == 200 and body:
+        runs = body.get("workflow_runs") or []
+        if runs:
+            r = runs[0]
+            out["ci_status"] = r.get("status")
+            out["ci_conclusion"] = r.get("conclusion")
+            out["ci_url"] = r.get("html_url")
+            out["ci_started_at"] = r.get("run_started_at")
+    # Open PR count (search API gives just a total).
+    status, body, _ = gh_request(
+        f"/search/issues?q=repo:{quote(full_name)}+is:pr+is:open&per_page=1"
+    )
+    if status == 200 and body:
+        out["pr_count"] = body.get("total_count", 0)
+    return out
+
+
+def overview() -> dict:
+    def build():
+        repos = gh_active_repos()
+        # Fan out repo-detail calls in parallel; GitHub rate limit is
+        # 5k req/h for an authed user, plenty of headroom for ~100 repos.
+        rows = []
+        with ThreadPoolExecutor(max_workers=8) as ex:
+            futures = {
+                ex.submit(gh_repo_status, r["full_name"], r["default_branch"]): r
+                for r in repos
+            }
+            for fut in as_completed(futures):
+                r = futures[fut]
+                try:
+                    detail = fut.result()
+                except Exception:
+                    detail = {}
+                rows.append({**r, **detail})
+        # Sort newest-pushed first.
+        rows.sort(key=lambda r: r.get("pushed_at") or "", reverse=True)
+
+        # Summary counts for the header.
+        summary = {
+            "total_active": len(rows),
+            "ci_running": sum(1 for r in rows if r.get("ci_status") in ("queued", "in_progress")),
+            "ci_failing": sum(1 for r in rows if r.get("ci_conclusion") == "failure"),
+            "ci_passing": sum(1 for r in rows if r.get("ci_conclusion") == "success"),
+            "open_prs": sum(r.get("pr_count", 0) for r in rows),
+            "open_issues": sum(r.get("open_issues_count", 0) for r in rows),
+        }
+        return {
+            "now": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "auth_ok": bool(gh_token()),
+            "active_days": GH_ACTIVE_DAYS,
+            "summary": summary,
+            "rows": rows,
+        }
+
+    return cached("overview", GH_CACHE_SECS, build)
+
+
+# ============================================================
+# HTML
+# ============================================================
+
+OVERVIEW_PAGE = """<!doctype html>
 <html><head>
 <meta charset="utf-8">
-<title>forcicd — ops dashboard</title>
+<title>forcicd — overview</title>
+<style>
+:root { color-scheme: dark; }
+body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
+       background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px;
+       max-width: 1400px; margin: 0 auto; }
+header { display: flex; justify-content: space-between; align-items: baseline;
+         margin-bottom: 16px; }
+h1 { font-size: 18px; margin: 0; }
+nav a { color: #58a6ff; margin-left: 12px; }
+nav a.active { color: #c9d1d9; }
+.subtitle { color: #8b949e; font-size: 12px; margin: 0 0 16px 0; }
+.grid { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px;
+        margin-bottom: 16px; }
+.card { background: #161b22; border: 1px solid #30363d; border-radius: 6px;
+        padding: 10px 14px; }
+.card .label { color: #8b949e; font-size: 10px; text-transform: uppercase; }
+.card .value { font-size: 22px; font-family: ui-monospace, monospace; }
+.ok { color: #3fb950; } .bad { color: #f85149; } .warn { color: #d29922; }
+.dim { color: #8b949e; }
+table { width: 100%; border-collapse: collapse; font-family: ui-monospace, monospace; }
+th, td { padding: 6px 8px; text-align: left; border-bottom: 1px solid #21262d; }
+th { color: #8b949e; font-weight: normal; font-size: 11px; text-transform: uppercase;
+     cursor: pointer; user-select: none; }
+th:hover { color: #c9d1d9; }
+a { color: #58a6ff; text-decoration: none; }
+a:hover { text-decoration: underline; }
+.search { background: #0d1117; border: 1px solid #30363d; color: #c9d1d9;
+          padding: 4px 8px; border-radius: 4px; font: inherit; width: 200px; }
+.pill { display: inline-block; padding: 1px 6px; border-radius: 10px;
+        font-size: 11px; background: #21262d; }
+.pill.ok { background: rgba(63, 185, 80, 0.18); color: #3fb950; }
+.pill.bad { background: rgba(248, 81, 73, 0.18); color: #f85149; }
+.pill.warn { background: rgba(210, 153, 34, 0.18); color: #d29922; }
+.foot { color: #6e7681; font-size: 11px; margin-top: 24px; text-align: center; }
+.controls { display: flex; gap: 12px; align-items: center; margin-bottom: 12px; }
+</style></head>
+<body>
+<header>
+  <h1>forcicd — overview</h1>
+  <nav>
+    <a href="/" class="active">overview</a>
+    <a href="/local">local CI</a>
+    <a href="http://forcicd.g8.lo:3000" target="_blank">forgejo</a>
+  </nav>
+</header>
+<p class="subtitle" id="subtitle">loading…</p>
+
+<div class="grid" id="summary"></div>
+
+<div class="controls">
+  <input class="search" id="filter" placeholder="filter (name / status / owner)…">
+  <span class="dim" id="resultcount"></span>
+</div>
+
+<table id="t">
+  <thead><tr>
+    <th data-k="full_name">repo</th>
+    <th data-k="ci_conclusion">ci</th>
+    <th data-k="pr_count">PRs</th>
+    <th data-k="open_issues_count">issues</th>
+    <th data-k="pushed_at">last push</th>
+    <th>flags</th>
+  </tr></thead>
+  <tbody id="rows"></tbody>
+</table>
+
+<p class="foot">data refreshes every 15s · last: <span id="now">—</span></p>
+
+<script>
+let DATA = {rows: [], summary: {}, active_days: 0};
+let SORT = {k: "pushed_at", desc: true};
+
+function pill(text, cls) {
+  return `<span class="pill ${cls||''}">${text||'—'}</span>`;
+}
+function ciCell(r) {
+  if (r.ci_status === "queued" || r.ci_status === "in_progress")
+    return `<a href="${r.ci_url||'#'}">${pill(r.ci_status, 'warn')}</a>`;
+  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}">${pill('passing','ok')}</a>`;
+  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}">${pill('failing','bad')}</a>`;
+  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}">${pill('cancelled','dim')}</a>`;
+  if (r.ci_conclusion === null && r.ci_status === null) return `<span class="dim">no ci</span>`;
+  return `<a href="${r.ci_url||'#'}">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
+}
+function flagCell(r) {
+  let f = [];
+  if (r.private) f.push(pill('priv'));
+  if (r.fork) f.push(pill('fork'));
+  if (r.archived) f.push(pill('archived','dim'));
+  return f.join(' ');
+}
+function ago(iso) {
+  if (!iso) return '—';
+  const ms = Date.now() - new Date(iso).getTime();
+  const m = Math.floor(ms/60000); const h = Math.floor(m/60); const d = Math.floor(h/24);
+  if (d > 0) return `${d}d ago`;
+  if (h > 0) return `${h}h ago`;
+  if (m > 0) return `${m}m ago`;
+  return 'just now';
+}
+function render() {
+  const s = DATA.summary;
+  document.getElementById('summary').innerHTML = `
+    <div class="card"><div class="label">active (${DATA.active_days}d)</div><div class="value">${s.total_active||0}</div></div>
+    <div class="card"><div class="label">running</div><div class="value warn">${s.ci_running||0}</div></div>
+    <div class="card"><div class="label">passing</div><div class="value ok">${s.ci_passing||0}</div></div>
+    <div class="card"><div class="label">failing</div><div class="value bad">${s.ci_failing||0}</div></div>
+    <div class="card"><div class="label">open PRs</div><div class="value">${s.open_prs||0}</div></div>
+    <div class="card"><div class="label">open issues</div><div class="value">${s.open_issues||0}</div></div>
+  `;
+
+  const q = document.getElementById('filter').value.toLowerCase();
+  let rows = DATA.rows.filter(r =>
+    !q || (r.full_name||'').toLowerCase().includes(q)
+       || (r.ci_conclusion||'').toLowerCase().includes(q)
+       || (r.ci_status||'').toLowerCase().includes(q)
+       || (r.owner||'').toLowerCase().includes(q));
+  rows.sort((a,b) => {
+    const x = a[SORT.k] ?? ''; const y = b[SORT.k] ?? '';
+    if (x < y) return SORT.desc ? 1 : -1;
+    if (x > y) return SORT.desc ? -1 : 1;
+    return 0;
+  });
+  document.getElementById('resultcount').textContent =
+    rows.length === DATA.rows.length ? `${rows.length} repos` : `${rows.length} of ${DATA.rows.length}`;
+  document.getElementById('rows').innerHTML = rows.map(r => `
+    <tr>
+      <td><a href="${r.html_url}" target="_blank">${r.full_name}</a></td>
+      <td>${ciCell(r)}</td>
+      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td class="dim">${ago(r.pushed_at)}</td>
+      <td>${flagCell(r)}</td>
+    </tr>`).join('');
+  document.getElementById('subtitle').textContent =
+    DATA.auth_ok
+      ? `multi-project ops view · GitHub auth ✓ · ${DATA.active_days}d window`
+      : 'NO GH TOKEN — put one at /etc/forcicd/github-token on the VM';
+}
+async function tick() {
+  try {
+    const d = await (await fetch('/overview.json')).json();
+    DATA = d;
+    document.getElementById('now').textContent = d.now;
+    render();
+  } catch (e) { /* keep last render */ }
+}
+document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
+  const k = th.dataset.k;
+  SORT = (SORT.k === k) ? {k, desc: !SORT.desc} : {k, desc: true};
+  render();
+});
+document.getElementById('filter').oninput = render;
+tick();
+setInterval(tick, 15000);
+</script>
+</body></html>
+"""
+
+LOCAL_PAGE = """<!doctype html>
+<html><head>
+<meta charset="utf-8">
+<title>forcicd — local CI</title>
 <style>
 :root { color-scheme: dark; }
 body { font: 14px/1.5 -apple-system, BlinkMacSystemFont, sans-serif;
        background: #0d1117; color: #c9d1d9; margin: 0; padding: 24px;
        max-width: 1100px; margin: 0 auto; }
-h1 { font-size: 18px; margin: 0 0 4px 0; }
+header { display: flex; justify-content: space-between; align-items: baseline;
+         margin-bottom: 16px; }
+h1 { font-size: 18px; margin: 0; }
+nav a { color: #58a6ff; margin-left: 12px; }
+nav a.active { color: #c9d1d9; }
 h2 { font-size: 14px; text-transform: uppercase; letter-spacing: .05em;
      color: #8b949e; margin: 24px 0 8px 0; border-bottom: 1px solid #30363d;
      padding-bottom: 4px; }
@@ -180,13 +528,20 @@ a { color: #58a6ff; }
 .foot { color: #6e7681; font-size: 11px; margin-top: 24px; text-align: center; }
 </style></head>
 <body>
-<h1>forcicd</h1>
-<p class="subtitle">Local CI/CD for fastetcd · <a href="http://forcicd.g8.lo:3000">Forgejo at :3000</a> · auto-refresh 5s</p>
+<header>
+  <h1>forcicd — local CI</h1>
+  <nav>
+    <a href="/">overview</a>
+    <a href="/local" class="active">local CI</a>
+    <a href="http://forcicd.g8.lo:3000" target="_blank">forgejo</a>
+  </nav>
+</header>
+<p class="subtitle">VM/containers/runner/mirror/CD on forcicd.g8.lo · auto-refresh 5s</p>
 <div id="root">loading…</div>
 <p class="foot">last data: <span id="now">—</span></p>
 <script>
 async function tick() {
-  const d = await (await fetch('/state.json')).json();
+  const d = await (await fetch('/local.json')).json();
   const sync = d.in_sync === true ? '<span class="ok">in sync</span>'
              : d.in_sync === false ? '<span class="warn">drift</span>'
              : '<span class="warn">—</span>';
@@ -238,26 +593,28 @@ setInterval(tick, 5000);
 
 
 class Handler(http.server.BaseHTTPRequestHandler):
+    def _send(self, body: bytes, ct: str, status: int = 200):
+        self.send_response(status)
+        self.send_header("Content-Type", ct)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
     def do_GET(self):  # noqa: N802
-        if self.path in ("/", "/index.html"):
-            self.send_response(200)
-            self.send_header("Content-Type", "text/html; charset=utf-8")
-            self.end_headers()
-            self.wfile.write(PAGE.encode())
-        elif self.path == "/state.json":
-            data = collect()
-            body = json.dumps(data).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
-            self.end_headers()
-            self.wfile.write(body)
+        if self.path in ("/", "/index.html", "/overview"):
+            self._send(OVERVIEW_PAGE.encode(), "text/html; charset=utf-8")
+        elif self.path == "/local":
+            self._send(LOCAL_PAGE.encode(), "text/html; charset=utf-8")
+        elif self.path == "/overview.json":
+            self._send(json.dumps(overview()).encode(), "application/json")
+        elif self.path in ("/state.json", "/local.json"):
+            self._send(json.dumps(local_state()).encode(), "application/json")
         elif self.path == "/healthz":
-            self.send_response(200); self.end_headers(); self.wfile.write(b"ok")
+            self._send(b"ok", "text/plain")
         else:
             self.send_response(404); self.end_headers()
 
-    def log_message(self, *_a, **_k):  # silence the default access log
+    def log_message(self, *_a, **_k):
         pass
 
 

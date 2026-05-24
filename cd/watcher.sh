@@ -14,6 +14,14 @@ CONF=/etc/forcicd/deploy.env
 : "${FORGEJO_REPO:=ci/fastetcd}"
 : "${FORGEJO_BRANCH:=main}"
 : "${FORGEJO_WORKFLOW:=ci.yml}"
+# Deploy when every job matching this regex has succeeded for a
+# given SHA AND none has failed. Default catches the three ubuntu
+# entries in fastetcd's matrix: `test (ubuntu-latest / )`,
+# `test (ubuntu-latest / iouring)`, `test (ubuntu-latest / wal-engine)`.
+# We can't use the upstream `build release Linux binary` job as
+# the gate because it `needs: [test]` and the macos entries always
+# cancel here (no macos runner), causing it to never run.
+: "${GATING_JOB_PATTERN:=^test \\(ubuntu-.*\\)$}"
 : "${STATE_FILE:=/var/lib/forcicd/last-deployed}"
 : "${DEPLOY_SCRIPT:=/opt/forcicd/deploy.sh}"
 : "${ADMIN_PW_FILE:=/etc/forcicd/admin-password}"
@@ -25,13 +33,33 @@ if [[ ! -f "${ADMIN_PW_FILE}" ]]; then
     exit 2
 fi
 
-# Find latest workflow_run on the configured branch that
-# concluded == success.
+# Find the most-recent fully-green commit on the configured branch.
+# Walk Forgejo's per-matrix-job listing newest→oldest, group by
+# head_sha, and report the first SHA where every job matching
+# GATING_JOB_PATTERN is `success` and none is `failure`.
 LATEST=$(curl --silent --max-time 5 --fail \
     -u "ci:$(cat "${ADMIN_PW_FILE}")" \
-    "${FORGEJO_URL}/api/v1/repos/${FORGEJO_REPO}/actions/runs?branch=${FORGEJO_BRANCH}&status=success&limit=1" \
-    | python3 -c 'import sys,json; d=json.load(sys.stdin); rs=d.get("workflow_runs",[]); print(rs[0]["head_sha"] if rs else "")' \
-    2>/dev/null)
+    "${FORGEJO_URL}/api/v1/repos/${FORGEJO_REPO}/actions/tasks?branch=${FORGEJO_BRANCH}&limit=60" \
+    | GATING_JOB_PATTERN="${GATING_JOB_PATTERN}" python3 -c '
+import json, os, re, sys
+pat = re.compile(os.environ["GATING_JOB_PATTERN"])
+runs = json.load(sys.stdin).get("workflow_runs", [])
+# Group matching runs by SHA, preserving newest-first order.
+seen, order = {}, []
+for r in runs:
+    if not pat.match(r.get("name", "")): continue
+    sha = r["head_sha"]
+    if sha not in seen:
+        seen[sha] = {"success": 0, "failure": 0, "other": 0}
+        order.append(sha)
+    s = r.get("status", "other")
+    seen[sha][s if s in ("success","failure") else "other"] += 1
+# Report newest SHA where ≥1 matched, all green, none failed/other.
+for sha in order:
+    c = seen[sha]
+    if c["success"] >= 1 and c["failure"] == 0 and c["other"] == 0:
+        print(sha); break
+' 2>/dev/null)
 
 if [[ -z "${LATEST}" ]]; then
     exit 0   # no green build yet
