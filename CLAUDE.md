@@ -16,7 +16,11 @@ push-to-deploy loop entirely on the LAN.
 
 ## Version
 
-**`0.0.1`** — initial scaffolding.
+**`0.1.0`** — operational. VM provisioned, Forgejo + runner +
+dashboard + local registry up, 5/9 runner toolchain images
+pushed (ubuntu22, alpine, debian11, debian12, ubi9), 4 building
+in background (ubi8, ubi10, bootc, fedora43). CD half scaffolded
+(`scripts/install-cd.sh` to enable).
 
 ## Architecture pillars
 
