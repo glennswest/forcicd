@@ -287,9 +287,49 @@ def gh_repo_status(full_name: str, default_branch: str) -> dict:
     return out
 
 
+def forgejo_local_ci() -> dict[str, dict]:
+    """Map repo-name → latest local Forgejo run status + log URL.
+
+    The overview's GitHub badges show *github.com* CI; this is what
+    *forcicd actually built locally*. Keyed by bare repo name (the
+    mirror lives at ci/<name>)."""
+    out: dict[str, dict] = {}
+    page = 1
+    while True:
+        repos = get_forgejo(
+            f"/api/v1/repos/search?uid=0&limit=50&page={page}"
+        ) or {}
+        items = repos.get("data") or []
+        if not items:
+            break
+        for r in items:
+            name = r.get("name")
+            full = r.get("full_name")  # ci/<name>
+            if not name or not full:
+                continue
+            tasks = get_forgejo(
+                f"/api/v1/repos/{full}/actions/tasks?limit=1"
+            ) or {}
+            run = (tasks.get("workflow_runs") or [None])[0]
+            if run:
+                out[name] = {
+                    "local_status": run.get("status"),
+                    "local_sha": (run.get("head_sha") or "")[:7],
+                    "local_url": f"http://forcicd.g8.lo:3000/{full}/actions/runs/{run.get('id')}",
+                }
+            else:
+                out[name] = {"local_status": None, "local_sha": None,
+                             "local_url": f"http://forcicd.g8.lo:3000/{full}/actions"}
+        if len(items) < 50:
+            break
+        page += 1
+    return out
+
+
 def overview() -> dict:
     def build():
         repos = gh_active_repos()
+        local = forgejo_local_ci()
         # Fan out repo-detail calls in parallel; GitHub rate limit is
         # 5k req/h for an authed user, plenty of headroom for ~100 repos.
         rows = []
@@ -304,7 +344,10 @@ def overview() -> dict:
                     detail = fut.result()
                 except Exception:
                     detail = {}
-                rows.append({**r, **detail})
+                # Join local forcicd build status by bare repo name.
+                loc = local.get(r["name"], {})
+                rows.append({**r, **detail, **loc,
+                             "mirrored": r["name"] in local})
         # Sort newest-pushed first.
         rows.sort(key=lambda r: r.get("pushed_at") or "", reverse=True)
 
@@ -314,6 +357,9 @@ def overview() -> dict:
             "ci_running": sum(1 for r in rows if r.get("ci_status") in ("queued", "in_progress")),
             "ci_failing": sum(1 for r in rows if r.get("ci_conclusion") == "failure"),
             "ci_passing": sum(1 for r in rows if r.get("ci_conclusion") == "success"),
+            "mirrored": sum(1 for r in rows if r.get("mirrored")),
+            "local_failing": sum(1 for r in rows if r.get("local_status") == "failure"),
+            "local_passing": sum(1 for r in rows if r.get("local_status") == "success"),
             "open_prs": sum(r.get("pr_count", 0) for r in rows),
             "open_issues": sum(r.get("open_issues_count", 0) for r in rows),
         }
@@ -390,13 +436,17 @@ a:hover { text-decoration: underline; }
   <label class="dim" style="cursor:pointer; user-select:none;">
     <input type="checkbox" id="hidenoci" checked> hide no-CI
   </label>
+  <label class="dim" style="cursor:pointer; user-select:none;">
+    <input type="checkbox" id="showgh"> show github ci
+  </label>
   <span class="dim" id="resultcount"></span>
 </div>
 
 <table id="t">
   <thead><tr>
     <th data-k="full_name">repo</th>
-    <th data-k="ci_conclusion">ci</th>
+    <th data-k="local_status">forcicd ci</th>
+    <th data-k="ci_conclusion" class="ghcol" style="display:none">github ci</th>
     <th data-k="pr_count">PRs</th>
     <th data-k="open_issues_count">issues</th>
     <th data-k="pushed_at">last push</th>
@@ -416,12 +466,26 @@ function pill(text, cls) {
 }
 function ciCell(r) {
   if (r.ci_status === "queued" || r.ci_status === "in_progress")
-    return `<a href="${r.ci_url||'#'}">${pill(r.ci_status, 'warn')}</a>`;
-  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}">${pill('passing','ok')}</a>`;
-  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}">${pill('failing','bad')}</a>`;
-  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}">${pill('cancelled','dim')}</a>`;
+    return `<a href="${r.ci_url||'#'}" target="_blank">${pill(r.ci_status, 'warn')}</a>`;
+  if (r.ci_conclusion === "success") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('passing','ok')}</a>`;
+  if (r.ci_conclusion === "failure") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('failing','bad')}</a>`;
+  if (r.ci_conclusion === "cancelled") return `<a href="${r.ci_url||'#'}" target="_blank">${pill('cancelled','dim')}</a>`;
   if (r.ci_conclusion === null && r.ci_status === null) return `<span class="dim">no ci</span>`;
-  return `<a href="${r.ci_url||'#'}">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
+  return `<a href="${r.ci_url||'#'}" target="_blank">${pill(r.ci_conclusion || '?', 'dim')}</a>`;
+}
+// forcicd-local build status. Click → the Forgejo run log.
+function localCell(r) {
+  if (!r.mirrored) return `<span class="dim">—</span>`;
+  const u = r.local_url || '#';
+  if (r.local_status === null)
+    return `<a href="${u}" target="_blank">${pill('pending','dim')}</a>`;
+  if (r.local_status === "success")
+    return `<a href="${u}" target="_blank">${pill('built ✓','ok')}</a>`;
+  if (r.local_status === "failure")
+    return `<a href="${u}" target="_blank">${pill('built ✗','bad')}</a>`;
+  if (r.local_status === "running" || r.local_status === "waiting")
+    return `<a href="${u}" target="_blank">${pill(r.local_status,'warn')}</a>`;
+  return `<a href="${u}" target="_blank">${pill(r.local_status||'?','dim')}</a>`;
 }
 function flagCell(r) {
   let f = [];
@@ -443,21 +507,29 @@ function render() {
   const s = DATA.summary;
   document.getElementById('summary').innerHTML = `
     <div class="card"><div class="label">active (${DATA.active_days}d)</div><div class="value">${s.total_active||0}</div></div>
-    <div class="card"><div class="label">running</div><div class="value warn">${s.ci_running||0}</div></div>
-    <div class="card"><div class="label">passing</div><div class="value ok">${s.ci_passing||0}</div></div>
-    <div class="card"><div class="label">failing</div><div class="value bad">${s.ci_failing||0}</div></div>
-    <div class="card"><div class="label">open PRs</div><div class="value">${s.open_prs||0}</div></div>
+    <div class="card"><div class="label">mirrored</div><div class="value">${s.mirrored||0}</div></div>
+    <div class="card"><div class="label">built ✓</div><div class="value ok">${s.local_passing||0}</div></div>
+    <div class="card"><div class="label">built ✗</div><div class="value bad">${s.local_failing||0}</div></div>
+    <div class="card"><div class="label">pending</div><div class="value warn">${(s.mirrored||0)-(s.local_passing||0)-(s.local_failing||0)}</div></div>
     <div class="card"><div class="label">open issues</div><div class="value">${s.open_issues||0}</div></div>
   `;
 
   const q = document.getElementById('filter').value.toLowerCase();
   const hideNoCi = document.getElementById('hidenoci').checked;
-  const hasCi = r => !(r.ci_status === null && r.ci_conclusion === null);
+  const showGh = document.getElementById('showgh').checked;
+  // "Has CI" = there's a workflow to run locally. We detect that
+  // from either a local run existing or github having had a run
+  // (github's disabled now, but its history tells us a workflow
+  // file is present in the repo).
+  const hasCi = r => r.local_status !== undefined && r.local_status !== null
+                  || !(r.ci_status === null && r.ci_conclusion === null);
+  // Toggle the github column visibility.
+  document.querySelectorAll('.ghcol').forEach(e => e.style.display = showGh ? '' : 'none');
   let rows = DATA.rows.filter(r =>
     (!hideNoCi || hasCi(r)) &&
     (!q || (r.full_name||'').toLowerCase().includes(q)
+        || (r.local_status||'').toLowerCase().includes(q)
         || (r.ci_conclusion||'').toLowerCase().includes(q)
-        || (r.ci_status||'').toLowerCase().includes(q)
         || (r.owner||'').toLowerCase().includes(q)));
   rows.sort((a,b) => {
     const x = a[SORT.k] ?? ''; const y = b[SORT.k] ?? '';
@@ -467,18 +539,20 @@ function render() {
   });
   document.getElementById('resultcount').textContent =
     rows.length === DATA.rows.length ? `${rows.length} repos` : `${rows.length} of ${DATA.rows.length}`;
+  const showGhCol = document.getElementById('showgh').checked;
   document.getElementById('rows').innerHTML = rows.map(r => `
     <tr>
       <td><a href="${r.html_url}" target="_blank">${r.full_name}</a></td>
-      <td>${ciCell(r)}</td>
-      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
-      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td>${localCell(r)}</td>
+      <td class="ghcol" style="display:${showGhCol?'':'none'}">${ciCell(r)}</td>
+      <td>${r.pr_count > 0 ? `<a href="${r.html_url}/pulls" target="_blank">${r.pr_count}</a>` : '<span class="dim">0</span>'}</td>
+      <td>${r.open_issues_count > 0 ? `<a href="${r.html_url}/issues" target="_blank">${r.open_issues_count}</a>` : '<span class="dim">0</span>'}</td>
       <td class="dim">${ago(r.pushed_at)}</td>
       <td>${flagCell(r)}</td>
     </tr>`).join('');
   document.getElementById('subtitle').textContent =
     DATA.auth_ok
-      ? `multi-project ops view · GitHub auth ✓ · ${DATA.active_days}d window`
+      ? `local-only CI · forcicd is authoritative · github actions disabled · ${DATA.active_days}d window`
       : 'NO GH TOKEN — put one at /etc/forcicd/github-token on the VM';
 }
 async function tick() {
@@ -496,6 +570,7 @@ document.querySelectorAll('th[data-k]').forEach(th => th.onclick = () => {
 });
 document.getElementById('filter').oninput = render;
 document.getElementById('hidenoci').onchange = render;
+document.getElementById('showgh').onchange = render;
 tick();
 setInterval(tick, 15000);
 </script>
