@@ -1,0 +1,11 @@
+[Unit]
+Description=forcicd — file GitHub issues for failed local CI builds
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 /opt/forcicd/issue-on-failure.sh
+Environment=FORGEJO_URL=http://localhost:3000
+StandardOutput=journal
+StandardError=journal

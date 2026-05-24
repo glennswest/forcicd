@@ -1,0 +1,11 @@
+[Unit]
+Description=Check for failed local CI builds every 60s and file issues
+
+[Timer]
+OnBootSec=2m
+OnUnitActiveSec=60s
+Unit=forcicd-issues.service
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target
