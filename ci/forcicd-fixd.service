@@ -5,5 +5,9 @@ After=network-online.target docker.service
 [Service]
 Type=oneshot
 ExecStart=/opt/forcicd/fix-dispatcher.sh
+# The dispatcher launches each worker in a detached `screen`
+# session. Default KillMode=control-group would reap those screens
+# when this oneshot exits — process leaves them running.
+KillMode=process
 StandardOutput=journal
 StandardError=journal

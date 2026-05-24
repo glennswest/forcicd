@@ -772,9 +772,11 @@ a { color: #58a6ff; text-decoration: none; } a:hover { text-decoration: underlin
 .lbl { background: #21262d; border-radius: 10px; padding: 1px 7px; font-size: 11px; margin-right: 3px; }
 .lbl.cifail { background: rgba(248,81,73,0.18); color: #f85149; }
 .btn { background: #238636; color: #fff; border: 0; border-radius: 5px;
-       padding: 4px 10px; font: inherit; cursor: pointer; }
+       padding: 4px 10px; font: inherit; cursor: pointer; margin-right: 4px; }
 .btn:hover { background: #2ea043; }
 .btn:disabled { background: #30363d; color: #8b949e; cursor: default; }
+.btn.ghost { background: #21262d; color: #58a6ff; }
+.btn.ghost:hover { background: #30363d; }
 .foot { color: #6e7681; font-size: 11px; margin-top: 24px; text-align: center; }
 </style></head>
 <body>
@@ -816,15 +818,25 @@ function labelsCell(r){
   return (r.labels||[]).map(l =>
     `<span class="lbl ${l===DATA.ci_label?'cifail':''}">${l}</span>`).join('');
 }
-async function fix(repo, number, btn){
-  btn.disabled = true; btn.textContent = 'launching…';
+async function fix(repo, number, mode, btn){
+  const row = btn.closest('tr');
+  row.querySelectorAll('button.btn').forEach(b => { b.disabled = true; });
+  btn.textContent = mode === 'interactive' ? 'starting…' : 'fixing…';
   try {
     const res = await fetch('/fix', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({repo, number})});
+      body: JSON.stringify({repo, number, mode})});
     const j = await res.json();
-    if (j.ok) { btn.textContent = 'worker: ' + (j.session||'started'); }
-    else { btn.textContent = 'failed'; btn.disabled = false; alert(j.error||'launch failed'); }
-  } catch(e) { btn.textContent='error'; btn.disabled=false; }
+    if (j.ok) {
+      btn.textContent = (mode==='interactive' ? '⌨ ' : '▶ ') + (j.session||'started');
+      if (j.attach) btn.title = j.attach;
+    } else {
+      btn.textContent = 'failed'; alert(j.error||'launch failed');
+      row.querySelectorAll('button.btn').forEach(b => { b.disabled = false; });
+    }
+  } catch(e) {
+    btn.textContent='error';
+    row.querySelectorAll('button.btn').forEach(b => { b.disabled = false; });
+  }
 }
 function render(){
   const s = DATA.summary;
@@ -851,7 +863,8 @@ function render(){
       <td>${labelsCell(r)}</td>
       <td class="dim">${ago(r.updated_at)}</td>
       <td>${r.is_ci_failure
-        ? `<button class="btn" onclick="fix('${r.repo}',${r.number},this)">▶ auto-fix</button>`
+        ? `<button class="btn" title="autonomous: Claude fixes it, no limits" onclick="fix('${r.repo}',${r.number},'fixit',this)">▶ fixit</button>
+           <button class="btn ghost" title="spin a throwaway env + leave a screen session you attach to" onclick="fix('${r.repo}',${r.number},'interactive',this)">⌨ interactive</button>`
         : '<span class="dim">—</span>'}</td>
     </tr>`).join('');
   document.getElementById('subtitle').textContent = DATA.auth_ok
@@ -874,24 +887,32 @@ tick(); setInterval(tick, 30000);
 """
 
 
-def launch_fix_worker(repo: str, number: int) -> dict:
-    """Kick off the agent worker for repo#number. Delegates to the
-    host helper /opt/forcicd/fix-worker.sh via the docker socket is
-    overkill; instead the dashboard writes a request file that the
-    host-side fix-dispatcher picks up. Keeps the dashboard container
-    from needing pct/screen access."""
+def launch_fix_worker(repo: str, number: int, mode: str = "fixit") -> dict:
+    """Queue an agent worker for repo#number by writing a request
+    file the host-side dispatcher picks up (keeps the dashboard
+    container unprivileged — no pct/screen/docker access here).
+
+    mode:
+      fixit       — autonomous: Claude fixes it with no turn limit,
+                    result posted to the issue, env torn down.
+      interactive — spin the throwaway env, leave a screen session
+                    for you to attach and work in by hand."""
     import re
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo or "") or not isinstance(number, int):
         return {"ok": False, "error": "bad repo/number"}
+    if mode not in ("fixit", "interactive"):
+        mode = "fixit"
     reqdir = os.environ.get("FIX_REQ_DIR", "/var/lib/forcicd/fix-requests")
     try:
         os.makedirs(reqdir, exist_ok=True)
-        session = f"fix-{repo.split('/')[-1]}-{number}"
+        session = f"{'int' if mode=='interactive' else 'fix'}-{repo.split('/')[-1]}-{number}"
         req = os.path.join(reqdir, f"{session}.json")
         with open(req, "w") as f:
-            json.dump({"repo": repo, "number": number, "session": session,
+            json.dump({"repo": repo, "number": number, "mode": mode,
+                       "session": session,
                        "requested_at": datetime.now(timezone.utc).isoformat()}, f)
-        return {"ok": True, "session": session}
+        return {"ok": True, "session": session, "mode": mode,
+                "attach": f"ssh fedora@forcicd.g8.lo then: sudo screen -r {session}"}
     except OSError as e:
         return {"ok": False, "error": str(e)}
 
@@ -932,7 +953,8 @@ class Handler(http.server.BaseHTTPRequestHandler):
             except json.JSONDecodeError:
                 payload = {}
             result = launch_fix_worker(payload.get("repo", ""),
-                                       payload.get("number"))
+                                       payload.get("number"),
+                                       payload.get("mode", "fixit"))
             code = 200 if result.get("ok") else 400
             self._send(json.dumps(result).encode(), "application/json", code)
         else:
