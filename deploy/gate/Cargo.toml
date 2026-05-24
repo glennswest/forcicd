@@ -1,0 +1,17 @@
+[package]
+name = "cigate"
+version = "0.1.0"
+edition = "2021"
+description = "forcicd deploy gate — a busybox-style limited shell exposing only CI/deploy verbs. The sole thing a deploy key may run on an app's LXC; no general shell, no host access."
+license = "Apache-2.0"
+
+[[bin]]
+name = "cigate"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = "z"
+lto = true
+strip = true
+panic = "abort"
+# Build static with: cargo build --release --target x86_64-unknown-linux-musl

@@ -1,0 +1,37 @@
+# Example deploy job for a forcicd consumer that runs as an LXC/VM.
+# Copy into the repo's .github/workflows/ci.yml. It deploys INTO
+# the app's own host (never the Proxmox host) via the restricted
+# forcicd-app-deploy wrapper, using the repo-scoped DEPLOY_KEY
+# secret that scripts/install-app-deploy.sh registered.
+#
+# Prereqs (one-time, by the forcicd owner):
+#   ./scripts/install-app-deploy.sh <repo> <target-host> [user]
+#
+# Note: pin actions/*-artifact to @v3 on the forcicd runner — v4 is
+# not supported on the GHES-compatible Forgejo Actions backend.
+
+  deploy:
+    needs: [test]                      # never deploy a red build
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Your CI built + pushed the image to the local registry in a
+      # prior job; here we just tell the target to roll to it.
+      - name: deploy to the app host
+        env:
+          DEPLOY_KEY:  ${{ secrets.DEPLOY_KEY }}
+          DEPLOY_HOST: qregistry.g10.lo          # the app's LXC/VM
+          IMAGE: forcicd.g8.lo:5000/qregistry:${{ github.sha }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s' "$DEPLOY_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          # The key is forced-command to `cigate` on the target:
+          # whatever we ask to "run" is parsed by cigate, which only
+          # accepts deploy|rollback|restart|status|logs|ps within
+          # policy. No shell, no host access.
+          ssh -i ~/.ssh/deploy_key \
+              -o StrictHostKeyChecking=accept-new \
+              "root@${DEPLOY_HOST}" "deploy ${IMAGE}"

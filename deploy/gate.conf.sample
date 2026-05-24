@@ -1,0 +1,22 @@
+# cigate policy — installed at /etc/forcicd-deploy/gate.conf ON THE
+# TARGET LXC/VM (never the Proxmox host). Simple key = value; cigate
+# parses it with std only. Anything outside these bounds is refused.
+
+# Container engine on the target.
+engine = podman
+
+# Registries an image ref may come from (space-separated). The
+# registry is the part before the first '/'. cigate also enforces a
+# tight charset, so no shell metacharacters can reach the engine.
+allowed_registries = forcicd.g8.lo:5000 fastregistry.g10.lo
+
+# The one container cigate manages on this host.
+container_name = qregistry
+
+# Args spliced into `run -d --name <c> --restart=unless-stopped ...`
+# (space-separated, explicit argv — never a shell string).
+run_args = -p 5000:5000 -v /data/registry:/var/lib/registry
+
+# Where cigate logs + records current/previous image for rollback.
+log_path = /var/log/forcicd-deploy-gate.log
+state_dir = /var/lib/forcicd-deploy

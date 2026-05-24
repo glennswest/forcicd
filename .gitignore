@@ -14,3 +14,7 @@ build/
 .vscode/
 .idea/
 .claude/
+
+# deploy keys (private)
+build/deploy-keys/
+build/pve-deploy-keys/

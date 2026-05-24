@@ -2,6 +2,25 @@
 
 ## [Unreleased]
 
+### 2026-05-24 (deploy gate — closes forcicd#1)
+- **feat:** `cigate` — a busybox-style Rust deploy gate
+  (`deploy/gate/`, zero deps, `panic=abort`, strict allowlist
+  parsing). The sole thing a deploy key may run on an app's
+  LXC/VM; exposes only `deploy/rollback/restart/status/logs/ps`,
+  refuses unknown verbs, shell metacharacters, and non-allowlisted
+  registries. **Never touches the Proxmox host** — deploys go into
+  the app's own CT/VM.
+- **feat:** `scripts/install-app-deploy.sh` builds cigate in a
+  runner container, installs it + a per-target policy, mints a
+  **per-repo** ed25519 key authorized as a forced command with
+  `from=`-pinning, and registers a **repo-scoped** `DEPLOY_KEY`
+  secret. Each repo can deploy only itself; no org-wide creds, no
+  hypervisor key.
+- **feat:** `deploy/deploy.example.yml` — copy-in deploy job
+  (`needs: [test]`, main-only) using `DEPLOY_KEY` → `cigate deploy`.
+- **docs:** onboarding covers the cigate model + the runner action
+  pins (`actions/*-artifact@v3`, node24 actions → `@v2.7.7`).
+
 ### 2026-05-24 (agent)
 - **feat:** Issue-driven auto-fix. The `/issues` tab lists open
   issues across all repos; `ci-failure` issues get **fixit**

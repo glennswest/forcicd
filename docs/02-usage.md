@@ -229,6 +229,59 @@ gives it a repo, a brief, and a build loop. Set in
 Attach to any running worker: `ssh fedora@forcicd.g8.lo` then
 `sudo screen -r <session>`.
 
+## Deploying to an LXC/VM — the `cigate` deploy gate
+
+Consumers that run as their own LXC/VM (e.g. qregistry) deploy
+**into that host directly — never to the Proxmox host**. The CT/VM
+is provisioned once out of band; CI only updates the running app,
+and only through `cigate`: a busybox-style Rust binary (zero deps,
+`panic=abort`, strict allowlist parsing) that exposes a fixed verb
+set and nothing else.
+
+`cigate` verbs: `deploy <ref>`, `rollback`, `restart`, `status`,
+`logs [N]`, `ps`. It refuses unknown verbs, shell metacharacters,
+and image refs from registries not in its policy. It never spawns a
+shell — every action is an explicit argv to the container engine.
+
+### Security model
+
+- **Per-repo, self-only.** Each consumer gets its **own** ed25519
+  key and a **repo-scoped** `DEPLOY_KEY` secret (never org-wide). A
+  repo's key only works on **its own** target host and can only run
+  `cigate` there. One repo cannot deploy another.
+- The key is authorized with `command="/usr/local/bin/cigate"` +
+  `from="<runner IP>"` + no pty/forwarding — it has no shell.
+- Per-target policy (`/etc/forcicd-deploy/gate.conf`) bounds the
+  container name, allowed registries, and run args.
+- **The hypervisor is never touched.** No key to `pve.g8.lo`.
+
+### Set it up (one-time, by the forcicd owner)
+
+```bash
+# build cigate (in a runner container), install it + a restricted
+# key on the target, register the repo-scoped secret:
+./scripts/install-app-deploy.sh qregistry qregistry.g10.lo root
+# then tune /etc/forcicd-deploy/gate.conf on the target (container
+# name, registries, run args).
+```
+
+Add a deploy job from `deploy/deploy.example.yml` to the repo's
+workflow. It `needs: [test]` and only runs on `main`, so a red
+build never deploys.
+
+## Runner action compatibility
+
+The Forgejo Actions runner is GHES-class, so a few GitHub actions
+need pinning in mirrored repos' workflows:
+
+- **`actions/upload-artifact` / `download-artifact`: pin `@v3`.**
+  `@v4+` errors with *“@actions/artifact v2.0.0+ … not currently
+  supported on GHES.”* The build itself is fine; only the artifact
+  step fails.
+- **`node24`-based actions** (e.g. `Swatinem/rust-cache@v2.8+`):
+  pin to the last `node20` release (`@v2.7.7`) until the runner
+  ships node24. (forgejo/runner:7 is node20.)
+
 ## Roadmap notes
 
 - **GitLab repos** — the overview is GitHub-only today. The
