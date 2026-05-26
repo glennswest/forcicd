@@ -2,6 +2,22 @@
 
 ## [Unreleased]
 
+### 2026-05-25 (gemini quality loop)
+- **feat:** `ci/gemini-review.py` + `forcicd-gemini.timer` — Gemini
+  reviews each newly pushed commit on a mirror (newest un-reviewed
+  commit per repo, polled from the local Forgejo every 60s) from
+  **four viewpoints** — security-infra, senior, performance,
+  api-ux — and files each actionable finding as a **local Forgejo
+  issue** (`gemini-review` + `review/<persona>` labels). Never
+  touches GitHub. Findings are mirrored into the dashboard issue
+  store so the one-click ▶ auto-fix button works.
+- **feat:** `scripts/install-gemini-review.sh` — installs the Gemini
+  CLI (`@google/gemini-cli`) on the VM, places the AI Studio key at
+  `/etc/forcicd/gemini-key` (0600, fed over stdin — never on the
+  command line or in the repo), deploys the reviewer + timer.
+- **docs:** `docs/03-gemini-review.md` — the quality loop end to end
+  (flow, install, viewpoints, tuning, hand-off to the fix-worker).
+
 ### 2026-05-25 (bootc disk images — forcicd#3)
 - **docs:** Blessed recipe for building **bootc** images into
   bootable disk artifacts (ISO/qcow2/raw) on the `bootc-c9s`
