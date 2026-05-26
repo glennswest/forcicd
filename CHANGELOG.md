@@ -2,6 +2,21 @@
 
 ## [Unreleased]
 
+### 2026-05-25 (bootc disk images — forcicd#3)
+- **docs:** Blessed recipe for building **bootc** images into
+  bootable disk artifacts (ISO/qcow2/raw) on the `bootc-c9s`
+  runner. Per-job containers already run `--privileged --device
+  /dev/fuse --security-opt seccomp=unconfined` and jobs run as
+  root, so `bootc-image-builder` works with no `self-hosted`/`sudo`
+  — `podman build` then `podman run … bootc-image-builder build
+  --type qcow2 --local …` (shared `/var/lib/containers/storage`).
+  Documented in `README.md` + `docs/02-usage.md`; copy-pasteable
+  workflow in `ci/bootc-image.example.yml`. Verified end-to-end on
+  the VM (loop devices present in the privileged job container).
+- **docs:** `docs/02-usage.md` runner-targeting section now states
+  the full per-job option set (`--privileged --device /dev/fuse`),
+  matching `forgejo/runner-config.yaml`.
+
 ### 2026-05-24 (deploy gate — closes forcicd#1)
 - **feat:** `cigate` — a busybox-style Rust deploy gate
   (`deploy/gate/`, zero deps, `panic=abort`, strict allowlist

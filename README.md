@@ -76,6 +76,16 @@ UBI images optionally register with `subscription-manager` for full
 RHEL repos when `RHEL_ORG_ID` + `RHEL_ACTIVATION_KEY` are passed as
 build args.
 
+### Building bootc disk images (ISO / qcow2)
+
+Per-job containers already run `--privileged --device /dev/fuse
+--security-opt seccomp=unconfined` (jobs run as root inside them),
+so `bootc-image-builder` works on the `bootc-c9s` runner with **no**
+`self-hosted` / `sudo` — `podman build` the bootc image, then
+`podman run … bootc-image-builder build --type qcow2 --local …`.
+Copy-pasteable recipe: [`ci/bootc-image.example.yml`](ci/bootc-image.example.yml);
+full walkthrough in [docs/02-usage.md](docs/02-usage.md#building-bootc-disk-images-iso--qcow2).
+
 ## GUIs
 
 | URL | What it shows |

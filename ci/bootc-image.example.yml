@@ -1,0 +1,80 @@
+# Example: build a bootc image and turn it into a bootable disk
+# artifact (ISO / qcow2) on a forcicd runner, then publish it as a
+# release asset. Copy the relevant job into the repo's
+# .github/workflows/ci.yml. (See docs/02-usage.md → "Building bootc
+# disk images".)
+#
+# Why this works without `self-hosted` + `sudo`:
+#   forcicd's per-job containers already run `--privileged
+#   --security-opt seccomp=unconfined --device /dev/fuse` (see
+#   forgejo/runner-config.yaml). The job runs AS ROOT inside that
+#   privileged container, so `bootc-image-builder` gets the loop
+#   devices + mount/partition access it needs. Do NOT use
+#   `runs-on: self-hosted` and do NOT use `sudo` — jobs run in a
+#   container, not on the VM host.
+#
+# Pick the `bootc-c9s` runner: it ships podman/buildah/skopeo, the
+# CentOS Stream 9 bootc base (so `bootc` is already present), and
+# qemu-img.
+
+  bootc-image:
+    runs-on: bootc-c9s
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the bootc container from your Containerfile. podman
+      #    runs rootful here (job is root), so the image lands in
+      #    /var/lib/containers/storage where bootc-image-builder
+      #    reads it via `--local`.
+      - name: build bootc image
+        run: |
+          podman build -t localhost/rspaced-agent:ci -f Containerfile .
+
+      # 2. Run bootc-image-builder to produce the bootable artifact.
+      #    --privileged + the shared container storage are the whole
+      #    trick. --type can be: iso | qcow2 | raw | vmdk | ami …
+      #    (repeat --type for several at once).
+      - name: build bootable disk (qcow2 + ISO)
+        run: |
+          mkdir -p out
+          podman run --rm --privileged \
+            --security-opt seccomp=unconfined \
+            -v "$PWD/out:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+              build \
+              --type qcow2 --type iso \
+              --local localhost/rspaced-agent:ci
+          # Artifacts land under out/<type>/ :
+          #   out/qcow2/disk.qcow2
+          #   out/bootiso/install.iso
+          find out -type f -printf '%p  %s bytes\n'
+
+      # 3. Publish as a release asset. forcicd's local CI is the
+      #    authoritative one; release back to GitHub with the push
+      #    token (see docs/02-usage.md), or attach to a Forgejo
+      #    release via the API. Pin actions/*-artifact to @v3.
+      - name: upload artifact
+        uses: actions/upload-artifact@v3
+        with:
+          name: rspaced-agent-bootc
+          path: out/**
+
+# ---------------------------------------------------------------
+# Notes / gotchas
+# ---------------------------------------------------------------
+# * `--local` reads the image from the job's own container storage,
+#   which is why step 2 bind-mounts /var/lib/containers/storage. No
+#   registry round-trip needed. (If you'd rather pull from a
+#   registry, push to forcicd.g8.lo:5000 first and drop `--local`,
+#   passing the full ref instead.)
+# * A rhel-coreos / rhel-bootc base works the same way; just change
+#   the Containerfile FROM. Entitlements (if the base needs them)
+#   are a separate concern from this recipe.
+# * `--type iso` yields an Anaconda install ISO (out/bootiso/);
+#   `--type qcow2` a ready-to-boot disk (out/qcow2/). For a serial
+#   console "hello world", boot the qcow2 with
+#   `qemu-system-x86_64 -nographic -m 2048 out/qcow2/disk.qcow2`.
+# * Disk size / partitions / users come from an optional
+#   bootc-image-builder `config.toml`; mount it in with
+#   `-v "$PWD/config.toml:/config.toml"` (bib auto-reads /config.toml).

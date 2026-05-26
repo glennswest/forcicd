@@ -64,9 +64,71 @@ labels (see README for the full table):
 
 A job that needs io_uring, KVM, or other privileged kernel
 features runs fine — per-job containers get
-`--security-opt seccomp=unconfined` and join the
-`forcicd_default` network (so they can reach `forgejo:3000` and
+`--privileged --security-opt seccomp=unconfined --device /dev/fuse`
+(see `forgejo/runner-config.yaml`) and join the `forcicd_default`
+network (so they can reach `forgejo:3000` and
 `forcicd-registry:5000` by name).
+
+## Building bootc disk images (ISO / qcow2)
+
+Building a **bootc** (bootable-container) image into a bootable
+disk artifact — ISO, qcow2, raw, etc. — is fully supported on the
+`bootc-c9s` runner. `bootc-image-builder` needs `--privileged`,
+loop devices, and mount/partition access; forcicd's per-job
+containers **already** run privileged (`--privileged --device
+/dev/fuse --security-opt seccomp=unconfined`, see
+`forgejo/runner-config.yaml`) and the job runs **as root** inside
+that container, so the builder gets what it needs.
+
+> **Do not** use `runs-on: self-hosted` and **do not** use `sudo`.
+> Jobs run in a container, not on the VM host; the runner images
+> have no `sudo` and run as root already. The `self-hosted` label
+> is only for jobs that must touch the host's docker/qemu directly.
+
+```yaml
+  bootc-image:
+    runs-on: bootc-c9s          # CentOS Stream 9 bootc + podman/buildah/skopeo + qemu-img
+    steps:
+      - uses: actions/checkout@v4
+
+      # 1. Build the bootc container. podman is rootful here, so the
+      #    image lands in /var/lib/containers/storage where the
+      #    builder reads it via --local.
+      - run: podman build -t localhost/myapp:ci -f Containerfile .
+
+      # 2. bootc-image-builder → bootable disk. --privileged + the
+      #    shared container storage are the whole trick.
+      - run: |
+          mkdir -p out
+          podman run --rm --privileged \
+            --security-opt seccomp=unconfined \
+            -v "$PWD/out:/output" \
+            -v /var/lib/containers/storage:/var/lib/containers/storage \
+            quay.io/centos-bootc/bootc-image-builder:latest \
+              build --type qcow2 --type iso --local localhost/myapp:ci
+          find out -type f          # out/qcow2/disk.qcow2, out/bootiso/install.iso
+```
+
+Notes:
+
+- `--local` reads the image from the job's own container storage
+  (that's why step 2 bind-mounts `/var/lib/containers/storage`). No
+  registry round-trip. To pull from a registry instead, push to
+  `forcicd.g8.lo:5000` first and drop `--local`, passing the full
+  ref.
+- `--type` may be repeated (`iso`, `qcow2`, `raw`, `vmdk`, `ami`…).
+  Output lands under `out/<type>/`.
+- A rhel-coreos / rhel-bootc base works identically — just change
+  the Containerfile `FROM` (plus entitlements if that base needs
+  them, which is orthogonal to this recipe).
+- Disk size / partitions / users come from an optional
+  `config.toml`; mount it with `-v "$PWD/config.toml:/config.toml"`
+  (bib auto-reads `/config.toml`).
+- Publish the artifact as a release asset the same way as any other
+  build output — see the release pattern below — or use
+  `actions/upload-artifact@v3` (pin to `@v3`).
+
+Copy-pasteable: [`../ci/bootc-image.example.yml`](../ci/bootc-image.example.yml).
 
 ## Letting CI jobs push commits / cut releases
 
