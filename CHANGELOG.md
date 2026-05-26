@@ -17,6 +17,23 @@
   command line or in the repo), deploys the reviewer + timer.
 - **docs:** `docs/03-gemini-review.md` — the quality loop end to end
   (flow, install, viewpoints, tuning, hand-off to the fix-worker).
+- **feat:** `ci/fix-worker.sh` is now **issue-source aware**. It
+  detects from the repo owner whether an issue is a local Forgejo
+  review finding (`ci/<name>`) or a GitHub `ci-failure`
+  (`owner/<name>`) — no new field through the dashboard/dispatcher.
+  For Forgejo findings it reads the issue + posts the explanation
+  via the Forgejo API, while still cloning + pushing the *writable*
+  GitHub upstream (the mirror is read-only) and opening a PR that
+  links back to the local issue. **Scoped to only that one repo.**
+- **feat:** Detailed auto-fix commit message — the issue title is
+  the commit subject (fed via a file, never shell-interpolated), so
+  the fix commit reads like a real fix, not a generic stub.
+- **feat:** Dashboard `/issues` shows the ▶ fixit / ⌨ interactive
+  buttons for **gemini-review** issues too (new `is_fixable` flag +
+  a "gemini reviews" summary card), and links rows to their tracker.
+- **chore:** `ci/fix.env.sample` defaults `CLAUDE_CMD` to plain
+  headless danger-mode `claude` (the env is a throwaway single-repo
+  clone, so skipping prompts is safe).
 
 ### 2026-05-25 (bootc disk images — forcicd#3)
 - **docs:** Blessed recipe for building **bootc** images into
