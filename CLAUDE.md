@@ -45,30 +45,6 @@ in background (ubi8, ubi10, bootc, fedora43). CD half scaffolded
    - configure pull-mirror for fastetcd
 6. First successful local CI run.
 
-## Gemini review → local issues → claude auto-fix (in progress)
-
-Closing the *quality* loop alongside the build loop:
-
-1. **Gemini reviews every push.** `ci/gemini-review.py` (systemd
-   timer, like `issue-on-failure.sh`) polls local Forgejo for the
-   newest un-reviewed commit per mirror, fetches its diff, and asks
-   the **Gemini CLI** to review from four viewpoints —
-   **Security/Infra**, **Senior engineer**, **Performance**,
-   **API/UX consumer**. Auth: `GEMINI_API_KEY` (AI Studio) at
-   `/etc/forcicd/gemini-key`.
-2. **Findings → local Forgejo issues.** Each actionable finding is a
-   *local* Forgejo issue on the mirror (label `gemini-review` +
-   persona). Never touches GitHub. Mirrored into the dashboard issue
-   store so the one-click auto-fix button works.
-3. **Claude fixes on the VM fix-worker.** The existing
-   `ci/fix-worker.sh` (CLAUDE_CMD = plain headless
-   `claude -p --dangerously-skip-permissions`) — extended to read
-   the issue from Forgejo + comment back there. **Scoped to only the
-   repo the issue is in**, detailed commit message, explanation
-   posted to the issue.
-
-Status: building (1) + (2) first, then wiring (3).
-
 ## Constraints
 
 - **Do not duplicate the GitHub workflow.** The `.github/workflows/`
