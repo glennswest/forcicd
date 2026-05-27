@@ -77,13 +77,9 @@ ssh "${PVE_HOST}" "set -e
     for i in \$(seq 1 30); do pct exec ${CTID} -- true 2>/dev/null && break; sleep 1; done
     pct exec ${CTID} -- install -d -m 0755 /work"
 
-# Push run.sh + TASK.md (+ the commit-subject for a detailed commit
-# message) into the CT. Docker bind-mounts WORK, so this lxc path is
-# the only one that needs the explicit copy.
+# Push run.sh + TASK.md into the CT.
 ssh "${PVE_HOST}" "pct push ${CTID} - /work/run.sh --perms 0755" < "${WORK}/run.sh"
 ssh "${PVE_HOST}" "pct push ${CTID} - /work/TASK.md" < "${WORK}/TASK.md"
-[[ -f "${WORK}/commit-subject.txt" ]] && \
-    ssh "${PVE_HOST}" "pct push ${CTID} - /work/commit-subject.txt" < "${WORK}/commit-subject.txt"
 
 if [[ "${ACTION}" == "interactive" ]]; then
     echo "==> entering CT ${CTID} (exit to end + destroy)"

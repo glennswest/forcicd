@@ -46,28 +46,8 @@ ENVF=/etc/forcicd/fix.env
 TOKEN=$(cat "${GH_TOKEN_FILE}" 2>/dev/null || true)
 [[ -n "${TOKEN}" ]] || { echo "no github token at ${GH_TOKEN_FILE}" >&2; exit 3; }
 
-# Issue source. Gemini review findings are LOCAL Forgejo issues
-# (repo "ci/<name>"); ci-failure issues live on GitHub. Detect it
-# from the repo owner so the dashboard/dispatcher need no new field.
-# The Forgejo mirror is a read-only pull-mirror, so a fix still
-# clones + pushes the *writable* GitHub upstream (GH_REPO) — only
-# the issue read + the explanation comment go to Forgejo.
-: "${FORGEJO_OWNER:=ci}"
-: "${FORGEJO_URL:=http://localhost:3000}"
-: "${FORGEJO_PW_FILE:=/etc/forcicd/admin-password}"
-: "${GH_OWNER:=glennswest}"
 NAME="${REPO##*/}"
-if [[ "${REPO%%/*}" == "${FORGEJO_OWNER}" ]]; then
-    SOURCE=forgejo
-    GH_REPO="${GH_OWNER}/${NAME}"
-    BRANCH="forcicd/review-fix-${NUMBER}"
-    FORGEJO_PW=$(cat "${FORGEJO_PW_FILE}" 2>/dev/null || true)
-    [[ -n "${FORGEJO_PW}" ]] || { echo "no forgejo admin pw at ${FORGEJO_PW_FILE}" >&2; exit 3; }
-else
-    SOURCE=github
-    GH_REPO="${REPO}"
-    BRANCH="forcicd/fix-${NUMBER}"
-fi
+BRANCH="forcicd/fix-${NUMBER}"
 WORK="${WORKROOT}/${SESSION}"
 LOG="${LOGROOT}/${SESSION}.log"
 IDX="${CLAUDE_INDEX_ROOT}/${NAME}"          # cached Claude index for this repo
@@ -75,29 +55,17 @@ install -d -m 0755 "${WORKROOT}" "${LOGROOT}" "${IDX}"
 rm -rf "${WORK}"; install -d -m 0755 "${WORK}"
 exec > >(tee -a "${LOG}") 2>&1
 
-api() {  # api METHOD PATH [JSON]  (GitHub)
+api() {  # api METHOD PATH [JSON]
     local m="$1" p="$2" d="${3:-}"
     local -a a=(-sS -X "${m}" -H "Authorization: Bearer ${TOKEN}"
                 -H "Accept: application/vnd.github+json")
     [[ -n "${d}" ]] && a+=(-d "${d}")
     curl "${a[@]}" "https://api.github.com${p}"
 }
-fjapi() {  # fjapi METHOD PATH [JSON]  (local Forgejo)
-    local m="$1" p="$2" d="${3:-}"
-    local -a a=(-sS -X "${m}" -u "${FORGEJO_OWNER}:${FORGEJO_PW}"
-                -H "Accept: application/json")
-    [[ -n "${d}" ]] && a+=(-H "Content-Type: application/json" -d "${d}")
-    curl "${a[@]}" "${FORGEJO_URL}/api/v1${p}"
-}
-comment() {  # comment <body-file> — posts to whichever tracker the issue lives in
+comment() {  # comment <body-file>
     local body; body=$(python3 -c 'import json,sys; print(json.dumps({"body": open(sys.argv[1]).read()}))' "$1")
-    if [[ "${SOURCE}" == "forgejo" ]]; then
-        fjapi POST "/repos/${REPO}/issues/${NUMBER}/comments" "${body}" >/dev/null \
-            && echo "  commented on ${REPO}#${NUMBER} (forgejo)"
-    else
-        api POST "/repos/${REPO}/issues/${NUMBER}/comments" "${body}" >/dev/null \
-            && echo "  commented on #${NUMBER}"
-    fi
+    api POST "/repos/${REPO}/issues/${NUMBER}/comments" "${body}" >/dev/null \
+        && echo "  commented on #${NUMBER}"
 }
 
 echo "=== forcicd ${MODE} worker ==="
@@ -105,18 +73,7 @@ echo "repo=${REPO} issue=#${NUMBER} session=${SESSION} backend=${FIX_BACKEND} br
 echo "started=$(date -u +%FT%TZ)"
 
 # ---- task brief (fetched host-side, injected into the env) --------
-if [[ "${SOURCE}" == "forgejo" ]]; then
-    ISSUE_JSON=$(fjapi GET "/repos/${REPO}/issues/${NUMBER}")
-else
-    ISSUE_JSON=$(api GET "/repos/${REPO}/issues/${NUMBER}")
-fi
-# Detailed commit subject from the issue title. Written via printf
-# (not interpolated into run.sh) so issue text can never be shell-
-# evaluated. Surfaced into the env as /work/commit-subject.txt.
-ISSUE_TITLE=$(python3 -c 'import json,sys
-try: print((json.loads(sys.argv[1]).get("title") or "").strip())
-except Exception: pass' "$ISSUE_JSON")
-printf 'fix: %s\n' "${ISSUE_TITLE:-resolve ${REPO}#${NUMBER}}" > "${WORK}/commit-subject.txt"
+ISSUE_JSON=$(api GET "/repos/${REPO}/issues/${NUMBER}")
 python3 - "$ISSUE_JSON" "$MODE" > "${WORK}/TASK.md" <<'PY'
 import json, sys
 d = json.loads(sys.argv[1]); mode = sys.argv[2]
@@ -143,8 +100,8 @@ cat > "${RUNNER}" <<EOF
 #!/usr/bin/env bash
 set -uo pipefail
 cd /work
-echo "==> cloning ${GH_REPO}"
-git clone --depth 50 "https://x-access-token:${TOKEN}@github.com/${GH_REPO}.git" repo || exit 4
+echo "==> cloning ${REPO}"
+git clone --depth 50 "https://x-access-token:${TOKEN}@github.com/${REPO}.git" repo || exit 4
 cd repo
 cp /work/TASK.md ./TASK.md
 EOF
@@ -161,13 +118,7 @@ echo "==> committing + pushing ${BRANCH}"
 rm -f ./TASK.md
 git checkout -b "${BRANCH}"
 git add -A
-{ if [ -f /work/commit-subject.txt ]; then cat /work/commit-subject.txt
-  else echo "fix: resolve ${REPO}#${NUMBER}"; fi
-  echo
-  echo "Autonomous fix by forcicd + Claude for ${REPO}#${NUMBER}."
-  echo "Full root-cause + fix explanation is posted on the issue."
-} > /work/commit-msg.txt
-if git commit -F /work/commit-msg.txt; then
+if git commit -m "fix: autonomous fix for #${NUMBER} (forcicd+claude)"; then
     git push -f origin "${BRANCH}"
     echo "PUSHED ${BRANCH}"
 else
@@ -211,19 +162,10 @@ grep -q "^PUSHED " "${LOG}" && PUSHED=true
 # Open a PR if we pushed a branch.
 PR_URL=""
 if ${PUSHED}; then
-    if [[ "${SOURCE}" == "forgejo" ]]; then
-        PR_TITLE="forcicd auto-fix for ${NAME} review #${NUMBER}"
-        PR_BODY="Autonomous fix for local forcicd review finding [${REPO}#${NUMBER}](${FORGEJO_URL}/${REPO}/issues/${NUMBER}). forcicd CI will validate this PR."
-    else
-        PR_TITLE="forcicd auto-fix for #${NUMBER}"
-        PR_BODY="Autonomous fix for #${NUMBER}. forcicd CI will validate. Closes #${NUMBER} when merged."
-    fi
-    # Build the JSON via python so PR_BODY's URLs/quotes can't break it.
-    PR_JSON=$(api POST "/repos/${GH_REPO}/pulls" \
-        "$(python3 -c 'import json,sys; print(json.dumps({"title":sys.argv[1],"head":sys.argv[2],"base":sys.argv[3],"body":sys.argv[4]}))' \
-            "${PR_TITLE}" "${BRANCH}" "${FIX_BASE_BRANCH}" "${PR_BODY}")")
+    PR_JSON=$(api POST "/repos/${REPO}/pulls" \
+        "{\"title\":\"forcicd auto-fix for #${NUMBER}\",\"head\":\"${BRANCH}\",\"base\":\"${FIX_BASE_BRANCH}\",\"body\":\"Autonomous fix for #${NUMBER}. forcicd CI will validate. Closes #${NUMBER} when merged.\"}")
     PR_URL=$(python3 -c 'import json,sys;print(json.load(sys.stdin).get("html_url",""))' <<<"${PR_JSON}" 2>/dev/null)
-    echo "  PR: ${PR_URL:-(exists or failed)}"
+    echo "  PR: ${PR_URL:-（exists or failed）}"
 fi
 
 # Post the writeup to the issue.
@@ -235,12 +177,8 @@ RESULT="${WORK}/result.md"
     else echo "_(no FIX_WRITEUP.md produced)_"; fi
     echo
     if ${PUSHED}; then
-        echo "Pushed branch \`${BRANCH}\` to \`${GH_REPO}\`${PR_URL:+ — PR: ${PR_URL}}."
-        if [[ "${SOURCE}" == "forgejo" ]]; then
-            echo "**forcicd CI is building it now.** Review + merge the PR; this local review issue can then be closed."
-        else
-            echo "**forcicd CI is building it now;** the issue closes when that PR goes green."
-        fi
+        echo "Pushed branch \`${BRANCH}\`${PR_URL:+ — PR: ${PR_URL}}."
+        echo "**forcicd CI is building it now;** the issue closes when that PR goes green."
     else
         echo "_No changes were committed._"
     fi

@@ -417,17 +417,11 @@ def issues() -> dict:
     store = load_issue_store()
     rows = [r for r in store.values() if (r.get("state") or "open") == "open"]
     for r in rows:
-        labels = r.get("labels") or []
-        r["is_ci_failure"] = LABEL_CI_FAILURE in labels
-        r["is_review"] = (r.get("kind") == "gemini-review"
-                          or "gemini-review" in labels)
-        # Both kinds get the one-click Claude auto-fix worker.
-        r["is_fixable"] = r["is_ci_failure"] or r["is_review"]
+        r["is_ci_failure"] = LABEL_CI_FAILURE in (r.get("labels") or [])
     rows.sort(key=lambda r: r.get("updated_at") or "", reverse=True)
     summary = {
         "total": len(rows),
         "ci_failures": sum(1 for r in rows if r.get("is_ci_failure")),
-        "reviews": sum(1 for r in rows if r.get("is_review")),
         "repos": len({r.get("repo") for r in rows}),
     }
     return {
@@ -860,7 +854,6 @@ function render(){
   document.getElementById('summary').innerHTML = `
     <div class="card"><div class="label">open issues</div><div class="value">${s.total||0}</div></div>
     <div class="card"><div class="label">ci-failures</div><div class="value bad">${s.ci_failures||0}</div></div>
-    <div class="card"><div class="label">gemini reviews</div><div class="value">${s.reviews||0}</div></div>
     <div class="card"><div class="label">repos</div><div class="value">${s.repos||0}</div></div>`;
   const q = document.getElementById('filter').value.toLowerCase();
   const ciOnly = document.getElementById('cionly').checked;
@@ -875,18 +868,18 @@ function render(){
     rows.length===DATA.rows.length?`${rows.length} issues`:`${rows.length} of ${DATA.rows.length}`;
   document.getElementById('rows').innerHTML = rows.map(r => `
     <tr>
-      <td><a href="${r.html_url}">${r.repo}</a></td>
+      <td><a href="https://github.com/${r.repo}/issues">${r.repo}</a></td>
       <td><a href="${r.html_url}">#${r.number}</a></td>
       <td><a href="${r.html_url}">${(r.title||'').replace(/</g,'&lt;')}</a></td>
       <td>${labelsCell(r)}</td>
       <td class="dim">${ago(r.updated_at)}</td>
-      <td>${r.is_fixable
+      <td>${r.is_ci_failure
         ? `<button class="btn" title="autonomous: Claude fixes it, no limits" onclick="fix('${r.repo}',${r.number},'fixit',this)">▶ fixit</button>
            <button class="btn ghost" title="spin a throwaway env + leave a screen session you attach to" onclick="fix('${r.repo}',${r.number},'interactive',this)">⌨ interactive</button>`
         : '<span class="dim">—</span>'}</td>
     </tr>`).join('');
   document.getElementById('subtitle').textContent = DATA.auth_ok
-    ? 'open issues across your repos · ci-failures + gemini reviews get a one-click Claude auto-fix worker'
+    ? 'open issues across your repos · ci-failures get a one-click Claude auto-fix worker'
     : 'NO GH TOKEN on the VM';
 }
 async function tick(){
